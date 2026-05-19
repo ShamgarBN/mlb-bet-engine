@@ -58,7 +58,23 @@ def build_market_features(season_start: int, season_end: int) -> pd.DataFrame:
 
     Joins odds_history (date + team_abbr key) to games.
     """
+    # Prefer the newer per-book SBR dataset (book='sbr_consensus'); fall
+    # back to the older xlsx archive (book='sbro_consensus') when no
+    # newer row exists. The window function picks one row per game.
     sql = """
+        WITH ranked_odds AS (
+            SELECT o.*,
+                   CASE WHEN o.book = 'sbr_consensus' THEN 0
+                        WHEN o.book = 'sbro_consensus' THEN 1
+                        ELSE 2 END AS book_priority,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY o.game_date, o.home_team_abbr, o.away_team_abbr
+                       ORDER BY CASE WHEN o.book = 'sbr_consensus' THEN 0
+                                     WHEN o.book = 'sbro_consensus' THEN 1
+                                     ELSE 2 END
+                   ) AS rn
+            FROM odds_history o
+        )
         SELECT
             g.game_pk,
             g.game_date,
@@ -74,10 +90,11 @@ def build_market_features(season_start: int, season_end: int) -> pd.DataFrame:
             o.total_close_over,
             o.total_close_under
         FROM games g
-        LEFT JOIN odds_history o
+        LEFT JOIN ranked_odds o
           ON o.game_date = g.game_date
          AND o.home_team_abbr = g.home_team_abbr
          AND o.away_team_abbr = g.away_team_abbr
+         AND o.rn = 1
         WHERE g.season BETWEEN ? AND ?
     """
     df = query(sql, params=(season_start, season_end))
