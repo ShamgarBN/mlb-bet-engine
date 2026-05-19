@@ -81,3 +81,8 @@ addopts = "-ra -q --strict-markers"
 python_version = "3.13"
 strict = false
 ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
