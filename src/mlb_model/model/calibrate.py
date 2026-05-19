@@ -34,8 +34,18 @@ class Calibrator:
     regressor: IsotonicRegression
 
     def transform(self, p: np.ndarray) -> np.ndarray:
-        """Map raw probabilities -> calibrated probabilities."""
-        return np.clip(self.regressor.predict(p), 1e-4, 1 - 1e-4)
+        """Map raw probabilities -> calibrated probabilities.
+
+        NaN-safe: any non-finite input passes through unchanged so the
+        caller can detect "no prediction available" rather than receive a
+        misleadingly confident 0/1.
+        """
+        p_arr = np.asarray(p, dtype=np.float64)
+        finite = np.isfinite(p_arr)
+        out = np.full_like(p_arr, np.nan, dtype=np.float64)
+        if finite.any():
+            out[finite] = np.clip(self.regressor.predict(p_arr[finite]), 1e-4, 1 - 1e-4)
+        return out
 
 
 def fit_calibrator(

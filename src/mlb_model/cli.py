@@ -93,17 +93,36 @@ def data_pull_range(
 @app.command()
 def train(
     through_season: Annotated[int, typer.Option(help="Train on data up to and including this season")],
-    train_start: Annotated[int, typer.Option(help="Earliest season to include")] = 2016,
+    train_start: Annotated[int, typer.Option(help="Earliest season to include")] = 2018,
 ) -> None:
-    """Train and persist the runs models from [train_start, through_season]."""
+    """Train final production models + calibrators on [train_start, through_season].
+
+    Pipeline:
+      1) Assemble features for the full window.
+      2) Fit ``FeatureSpec`` (medians for imputation) on the entire window.
+      3) Train home/away ``RunsModel`` with a 15% tail validation set.
+      4) Train a direct over/under classifier on the same training matrix.
+      5) Walk forward season-by-season to produce **out-of-fold** predictions
+         for the calibrator -- this is the only way to get unbiased calibration
+         on a model that has seen every other game.
+      6) Fit isotonic regressors per market and persist all artifacts.
+    """
+    import numpy as np
+    import pandas as pd
+
     configure_logging()
+    from mlb_model.config import settings as _settings
     from mlb_model.features.assemble import build_features_table
+    from mlb_model.model.calibrate import fit_calibrator, save_calibrator
     from mlb_model.model.feature_matrix import (
         build_runs_matrix,
         build_runs_matrix_away,
         fit_spec,
     )
     from mlb_model.model.runs import save_model, train_runs_model
+    from mlb_model.model.simulate import simulate_games
+    from mlb_model.model.totals import train_totals_model
+    import joblib
 
     features = build_features_table(train_start, through_season).dropna(
         subset=["target_home_score", "target_away_score"]
@@ -113,15 +132,158 @@ def train(
         raise typer.Exit(code=1)
 
     spec = fit_spec(features)
-    X_home, mh, feat_cols = build_runs_matrix(features, spec)
-    X_away, ma, _ = build_runs_matrix_away(features, spec)
-    y_home = features["target_home_score"].to_numpy()
-    y_away = features["target_away_score"].to_numpy()
+    feat_path = _settings.model_dir / "feature_spec.joblib"
+    _settings.model_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(spec, feat_path, compress=("zlib", 3))
 
-    home_model = train_runs_model(X_home[mh], y_home[mh], feat_cols)
-    away_model = train_runs_model(X_away[ma], y_away[ma], feat_cols)
+    # ---- final production models on ALL data ----
+    features_sorted = features.sort_values("game_date").reset_index(drop=True)
+    val_cut = int(len(features_sorted) * 0.85)
+    train_part = features_sorted.iloc[:val_cut]
+    val_part = features_sorted.iloc[val_cut:]
+
+    X_home_t, mh_t, feat_cols = build_runs_matrix(train_part, spec)
+    X_away_t, ma_t, _ = build_runs_matrix_away(train_part, spec)
+    X_home_v, mh_v, _ = build_runs_matrix(val_part, spec)
+    X_away_v, ma_v, _ = build_runs_matrix_away(val_part, spec)
+
+    y_home_t = train_part["target_home_score"].to_numpy()[mh_t]
+    y_away_t = train_part["target_away_score"].to_numpy()[ma_t]
+    y_home_v = val_part["target_home_score"].to_numpy()[mh_v]
+    y_away_v = val_part["target_away_score"].to_numpy()[ma_v]
+
+    home_model = train_runs_model(
+        X_home_t[mh_t], y_home_t, feat_cols,
+        eval_X=X_home_v[mh_v], eval_y=y_home_v,
+    )
+    away_model = train_runs_model(
+        X_away_t[ma_t], y_away_t, feat_cols,
+        eval_X=X_away_v[ma_v], eval_y=y_away_v,
+    )
     save_model(home_model, "home_runs")
     save_model(away_model, "away_runs")
+
+    # Direct OU classifier
+    train_total_line = pd.to_numeric(
+        train_part["market_total_close"], errors="coerce"
+    ).to_numpy(dtype=np.float64)
+    train_total_runs = (
+        pd.to_numeric(train_part["target_home_score"], errors="coerce")
+        + pd.to_numeric(train_part["target_away_score"], errors="coerce")
+    ).to_numpy(dtype=np.float64)
+    y_ou_t = np.where(
+        np.isfinite(train_total_line) & np.isfinite(train_total_runs),
+        (train_total_runs > train_total_line).astype(np.float64),
+        np.nan,
+    )
+    val_total_line = pd.to_numeric(
+        val_part["market_total_close"], errors="coerce"
+    ).to_numpy(dtype=np.float64)
+    val_total_runs = (
+        pd.to_numeric(val_part["target_home_score"], errors="coerce")
+        + pd.to_numeric(val_part["target_away_score"], errors="coerce")
+    ).to_numpy(dtype=np.float64)
+    y_ou_v = np.where(
+        np.isfinite(val_total_line) & np.isfinite(val_total_runs),
+        (val_total_runs > val_total_line).astype(np.float64),
+        np.nan,
+    )
+    try:
+        totals_model = train_totals_model(
+            X_home_t[mh_t], y_ou_t[mh_t], feat_cols,
+            X_val=X_home_v[mh_v], y_val=y_ou_v[mh_v],
+        )
+        joblib.dump(
+            {
+                "feature_cols": totals_model.feature_cols,
+                "model_str": totals_model.booster.model_to_string(),
+            },
+            _settings.model_dir / "totals.joblib",
+            compress=("zlib", 3),
+        )
+    except ValueError as exc:
+        log.warning("totals.train.failed", reason=str(exc))
+
+    # ---- out-of-fold predictions for calibration ----
+    # We refit per season chronologically using the existing walk-forward
+    # routine, then aggregate per-game probabilities to fit isotonic.
+    console.print("[cyan]Computing OOF predictions for calibration...[/cyan]")
+    oof_rows: list[dict] = []
+    seasons = sorted(features["season"].unique().tolist())
+    for s in seasons:
+        if s == train_start:
+            continue  # need at least one prior season to train on
+        prior = features[features["season"] < s]
+        this_season = features[features["season"] == s]
+        if prior.empty or this_season.empty:
+            continue
+        sub_spec = fit_spec(prior)
+        Xh, mh, _ = build_runs_matrix(this_season, sub_spec)
+        Xa, ma, _ = build_runs_matrix_away(this_season, sub_spec)
+        valid = mh & ma
+        if valid.sum() == 0:
+            continue
+        rows = this_season.loc[valid].reset_index(drop=True)
+        ph_X, pa_X = Xh[valid], Xa[valid]
+
+        # Fit smaller-window models per season for OOF (chronological 85/15 tail)
+        prior_sorted = prior.sort_values("game_date").reset_index(drop=True)
+        vc = int(len(prior_sorted) * 0.85)
+        tp, vp = prior_sorted.iloc[:vc], prior_sorted.iloc[vc:]
+        Xht, mht, _ = build_runs_matrix(tp, sub_spec)
+        Xat, mat, _ = build_runs_matrix_away(tp, sub_spec)
+        Xhv, mhv, _ = build_runs_matrix(vp, sub_spec)
+        Xav, mav, _ = build_runs_matrix_away(vp, sub_spec)
+        oof_home = train_runs_model(
+            Xht[mht], tp["target_home_score"].to_numpy()[mht], feat_cols,
+            eval_X=Xhv[mhv], eval_y=vp["target_home_score"].to_numpy()[mhv],
+        )
+        oof_away = train_runs_model(
+            Xat[mat], tp["target_away_score"].to_numpy()[mat], feat_cols,
+            eval_X=Xav[mav], eval_y=vp["target_away_score"].to_numpy()[mav],
+        )
+        hm, hs = oof_home.predict_distribution(ph_X)
+        am, ase = oof_away.predict_distribution(pa_X)
+        tl = pd.to_numeric(rows["market_total_close"], errors="coerce").to_numpy(np.float64)
+        preds = simulate_games(
+            game_pks=rows["game_pk"].to_numpy(),
+            pred_home=(hm, hs), pred_away=(am, ase),
+            total_lines=tl, n_sims=_settings.monte_carlo_iterations,
+            seed=_settings.random_seed + int(s),
+        )
+        runs_actual = (
+            pd.to_numeric(rows["target_home_score"], errors="coerce")
+            + pd.to_numeric(rows["target_away_score"], errors="coerce")
+        ).to_numpy(np.float64)
+        for i, p in enumerate(preds):
+            oof_rows.append(
+                {
+                    "p_ml": p.p_home_win,
+                    "y_ml": float(rows["target_home_win"].iloc[i]) if pd.notna(rows["target_home_win"].iloc[i]) else np.nan,
+                    "p_rl": p.p_home_runline_cover,
+                    "y_rl": float((rows["target_home_score"].iloc[i] - rows["target_away_score"].iloc[i]) > 1.5),
+                    "p_ou": p.p_total_over,
+                    "y_ou": float(runs_actual[i] > tl[i]) if np.isfinite(tl[i]) else np.nan,
+                }
+            )
+
+    oof = pd.DataFrame(oof_rows)
+    if not oof.empty:
+        for market, p_col, y_col in [
+            ("moneyline", "p_ml", "y_ml"),
+            ("runline", "p_rl", "y_rl"),
+            ("total", "p_ou", "y_ou"),
+        ]:
+            sub = oof.dropna(subset=[p_col, y_col])
+            if len(sub) < 100:
+                console.print(f"[yellow]Skipping {market} calibration (n={len(sub)})[/yellow]")
+                continue
+            cal = fit_calibrator(market, sub[p_col].to_numpy(), sub[y_col].to_numpy())
+            save_calibrator(cal)
+            console.print(
+                f"[green]Calibrated {market}[/green] on {len(sub):,} OOF games"
+            )
+
     console.print(
         f"[green]Trained on {len(features):,} games "
         f"({train_start}-{through_season}).[/green]"
@@ -200,6 +362,78 @@ def predict(
             f"{row['confidence_ml']:.3f}",
         )
     console.print(table)
+
+
+@app.command("model-card")
+def model_card(
+    csv_path: Annotated[
+        str, typer.Option(help="Backtest CSV path to summarize")
+    ] = "logs/backtest_v4.csv",
+) -> None:
+    """Print an honest performance summary suitable for a model card."""
+    import pandas as pd
+
+    df = pd.read_csv(csv_path)
+    console.print(f"\n[bold]Model Card — backtest from {csv_path}[/bold]")
+
+    agg = df[
+        [
+            "ml_accuracy", "ml_top3_acc", "ml_top10_acc", "ml_top30_acc",
+            "rl_accuracy", "rl_top10_acc", "ou_accuracy", "ou_top10_acc",
+            "clv_ml",
+        ]
+    ].mean()
+
+    targets: dict[str, tuple[float, str]] = {
+        "ml_accuracy":    (0.55, "Moneyline accuracy, all picks"),
+        "ml_top30_acc":   (0.60, "Moneyline accuracy, top-30% confidence"),
+        "ml_top10_acc":   (0.66, "Moneyline accuracy, top-10% confidence"),
+        "ml_top3_acc":    (0.70, "Moneyline accuracy, top-3% conviction"),
+        "rl_accuracy":    (0.55, "Run-line accuracy, all picks"),
+        "rl_top10_acc":   (0.70, "Run-line accuracy, top-10% confidence"),
+        "ou_accuracy":    (0.52, "Over/under accuracy, all picks"),
+        "ou_top10_acc":   (0.55, "Over/under accuracy, top-10% confidence"),
+        "clv_ml":         (0.0,  "Closing-line value vs market (cents/game)"),
+    }
+
+    table = Table(title=f"Backtest aggregate across {len(df)} seasons")
+    table.add_column("Metric")
+    table.add_column("Description")
+    table.add_column("Target", justify="right")
+    table.add_column("Measured", justify="right")
+    table.add_column("Status")
+    for metric, (target, desc) in targets.items():
+        val = float(agg.get(metric, float("nan")))
+        if val != val:
+            status, value_str = "[grey]n/a[/grey]", "n/a"
+        else:
+            value_str = f"{val:.3f}" if metric != "clv_ml" else f"{val:+.2f}"
+            status = (
+                "[green]met[/green]" if val >= target else "[red]below[/red]"
+            )
+        target_str = f"{target:.3f}" if metric != "clv_ml" else f"{target:+.2f}"
+        table.add_row(metric, desc, target_str, value_str, status)
+    console.print(table)
+
+    console.print("\n[bold]Per-season breakdown:[/bold]")
+    season_table = Table()
+    for col in [
+        "season", "n_games", "ml_accuracy", "ml_top10_acc",
+        "ml_top3_acc", "rl_top10_acc", "ou_accuracy", "clv_ml",
+    ]:
+        season_table.add_column(col)
+    for _, row in df.iterrows():
+        season_table.add_row(
+            str(int(row["season"])),
+            str(int(row["n_games"])),
+            f"{row['ml_accuracy']:.3f}",
+            f"{row['ml_top10_acc']:.3f}",
+            f"{row['ml_top3_acc']:.3f}",
+            f"{row['rl_top10_acc']:.3f}",
+            f"{row['ou_accuracy']:.3f}" if pd.notna(row["ou_accuracy"]) else "n/a",
+            f"{row['clv_ml']:+.2f}" if pd.notna(row["clv_ml"]) else "n/a",
+        )
+    console.print(season_table)
 
 
 def main() -> None:  # entry-point alias for [project.scripts]
