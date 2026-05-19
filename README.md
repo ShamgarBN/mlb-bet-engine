@@ -5,19 +5,21 @@ run line, and over/under markets. Walk-forward backtested 2014–present.
 
 ## Honest performance targets vs. measured results
 
-The closing line on MLB games is one of the most efficient single-game forecasts in
-all of sports. Realistic targets for an elite public-data model — and the
-**actual measured results** from the 2019–2025 walk-forward backtest:
+The closing line on MLB games is one of the most efficient single-game forecasts
+in all of sports. Realistic targets for an elite public-data model — and the
+**actual measured results** from the 2019–2025 walk-forward backtest
+(15,773 games):
 
-| Slice | Target | **Measured (2019–25 mean)** |
-|---|---|---|
-| Moneyline — all games | 55–58% | **59.4%** |
-| Moneyline — top 30% confidence | 60–63% | **67.7%** |
-| Moneyline — top 10% confidence | 66–72% | **72.1%** |
-| Moneyline — top 3% (highest edge) | 70%+ | **73.6%** |
-| Run line — all games | 60%+ | **64.8%** |
-| Run line — top 10% confidence | 70%+ | **80.2%** |
-| Closing-line value (cents) | positive | **+3.6¢** |
+| Slice | Target | **Measured (2019–25 mean)** | Status |
+|---|---|---|---|
+| Moneyline — all picks | 55–58% | **60.7%** | met |
+| Moneyline — top 30% confidence | 60–63% | **69.2%** | met |
+| Moneyline — top 10% confidence | 66–72% | **74.3%** | met |
+| Moneyline — top 3% conviction | 70%+ | **75.9%** | met |
+| Run line — all picks | 55%+ | **65.2%** | met |
+| Run line — top 10% confidence | 70%+ | **80.7%** | met |
+| Over/under — all picks | 52%+ | 52.0% | borderline |
+| Closing-line value (cents) | positive | **+3.48** | met |
 
 The model exposes confidence tiers so you can choose the trade-off between
 **sample size** and **hit rate**. Anything claiming >70% on *all* games is
@@ -26,18 +28,18 @@ public information.
 
 ### Per-season detail (walk-forward, train on prior seasons only)
 
-| Season | Games | ML Acc | ML Top-3% | ML Top-10% | RL Top-10% | CLV |
-|---|---|---|---|---|---|---|
-| 2019 | 2,466 | 62.4% | **83.8%** | 78.1% | 83.4% | +1.4 |
-| 2020 |   951 | 60.9% | 65.5% | 74.7% | 76.8% | +4.3 |
-| 2021 | 2,466 | 63.1% | 79.7% | **79.4%** | 80.6% | +5.3 |
-| 2022 | 2,470 | 58.4% | 67.6% | 66.8% | 83.4% | n/a* |
-| 2023 | 2,471 | 56.7% | 72.9% | 65.6% | 79.8% | n/a* |
-| 2024 | 2,472 | 57.0% | 72.9% | 68.4% | 82.2% | n/a* |
-| 2025 | 2,477 | 57.4% | 72.9% | 71.7% | 75.0% | n/a* |
+| Season | Games | ML Acc | ML Top-10% | ML Top-3% | RL Top-10% | OU | CLV |
+|---|---|---|---|---|---|---|---|
+| 2019 | 2,466 | 62.7% | 77.3% | **85.1%** | 81.8% | n/a | +1.47 |
+| 2020 |   951 | 61.7% | 72.6% | 62.1%     | 76.8% | 52.3% | +4.42 |
+| 2021 | 2,466 | **65.0%** | **83.0%** | **89.2%** | 84.2% | 52.5% | +3.18 |
+| 2022 | 2,470 | 61.4% | 68.4% | 66.2% | **85.4%** | 51.7% | +4.28 |
+| 2023 | 2,471 | 58.5% | 74.9% | **82.4%** | 77.7% | 52.8% | +4.76 |
+| 2024 | 2,472 | 58.4% | 72.9% | 73.0% | 83.4% | 49.5% | +3.24 |
+| 2025 | 2,477 | 57.1% | 71.0% | 73.0% | 75.8% | 53.0% | +3.00 |
 
-\* 2022+ has no public archive of closing lines (SBRO stopped publishing).
-Accuracy is still measurable, but CLV requires the closing price.
+`logs/backtest_v4.csv` is the source of truth; `uv run mlb-model model-card`
+will render this table fresh.
 
 ## Data sources (all free)
 
@@ -61,16 +63,27 @@ Raw data  →  Cleaned facts  →  Engineered features  →  Two-stage model  �
 ## Quick start
 
 ```bash
-# install deps (one-time)
+# 0) install deps (one-time)
 uv sync --all-extras
 
-# pull latest data
-uv run mlb-model data pull --season 2025
+# 1) build the warehouse + seed venue metadata
+uv run mlb-model data init
 
-# train + backtest a season
-uv run mlb-model backtest --start 2014 --end 2024
+# 2) pull schedule + boxscores + weather for each season you want
+uv run mlb-model data pull-range 2018 2025
 
-# get today's picks
+# 3) drop the SBR odds dataset (76 MB JSON) into data/raw/odds_scraped/
+#    and ingest it -- see scripts/backfill_odds.py for the older xlsx archive
+uv run python -c "from mlb_model.data.sources.odds_sbr_json import ingest_dataset; ingest_dataset()"
+
+# 4) walk-forward backtest the model
+uv run mlb-model backtest --start 2019 --end 2025 --output logs/backtest_v4.csv
+uv run mlb-model model-card --csv-path logs/backtest_v4.csv
+
+# 5) train final production models + calibrators
+uv run mlb-model train --through-season 2024 --train-start 2018
+
+# 6) produce today's picks (probable pitchers + weather refreshed automatically)
 uv run mlb-model predict --date today
 ```
 

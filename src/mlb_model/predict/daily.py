@@ -15,6 +15,8 @@ from __future__ import annotations
 from datetime import date as date_cls, timedelta
 from pathlib import Path
 
+import joblib
+import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
@@ -59,12 +61,18 @@ def predict_for_date(target_date: date_cls, *, refresh_data: bool = True) -> pd.
         log.warning("predict.no_target_games", target_date=target_date)
         return target
 
-    # Fit a spec on the *historical* portion so we don't peek at today.
-    historical = features[~target_mask]
-    if historical.empty:
-        log.warning("predict.no_historical_features")
-        return pd.DataFrame()
-    spec = fit_spec(historical)
+    # Prefer the persisted FeatureSpec from training so we use the exact
+    # same imputation values; fall back to fitting on the historical
+    # portion if no persisted spec exists.
+    spec_path = settings.model_dir / "feature_spec.joblib"
+    if spec_path.exists():
+        spec = joblib.load(spec_path)
+    else:
+        historical = features[~target_mask]
+        if historical.empty:
+            log.warning("predict.no_historical_features")
+            return pd.DataFrame()
+        spec = fit_spec(historical)
 
     home_model = load_model("home_runs")
     away_model = load_model("away_runs")
@@ -86,6 +94,19 @@ def predict_for_date(target_date: date_cls, *, refresh_data: bool = True) -> pd.
         n_sims=settings.monte_carlo_iterations,
         seed=settings.random_seed,
     )
+
+    # Direct OU classifier if persisted. Falls back to simulated P(over).
+    totals_path = settings.model_dir / "totals.joblib"
+    if totals_path.exists():
+        state = joblib.load(totals_path)
+        booster = lgb.Booster(model_str=state["model_str"])
+        p_over_direct = np.clip(booster.predict(X_home[valid]), 1e-6, 1 - 1e-6)
+        no_line = ~np.isfinite(total_lines)
+        if no_line.any():
+            sim_p = np.array([p.p_total_over for p in preds], dtype=np.float64)
+            p_over_direct = np.where(no_line, sim_p, p_over_direct)
+        for i, pred in enumerate(preds):
+            pred.p_total_over = float(p_over_direct[i])
 
     pred_df = pd.DataFrame([p.__dict__ for p in preds])
 
