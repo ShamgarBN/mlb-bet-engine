@@ -43,6 +43,7 @@ from mlb_model.model.feature_matrix import (
 )
 from mlb_model.model.runs import train_runs_model
 from mlb_model.model.simulate import simulate_games
+from mlb_model.model.totals import train_totals_model
 
 log = get_logger("backtest")
 
@@ -165,6 +166,56 @@ def backtest_season(target_season: int, train_start: int) -> SeasonResult | None
         n_sims=settings.monte_carlo_iterations,
         seed=settings.random_seed + target_season,
     )
+
+    # Direct over/under classifier (uses market_total_close as a feature).
+    # Trained on the same feature matrix as the run models but with binary
+    # over/under target. Rows missing total_close are dropped from training.
+    train_total_line = pd.to_numeric(
+        train_part["market_total_close"], errors="coerce"
+    ).to_numpy(dtype=np.float64)
+    train_runs_actual = (
+        pd.to_numeric(train_part["target_home_score"], errors="coerce")
+        + pd.to_numeric(train_part["target_away_score"], errors="coerce")
+    ).to_numpy(dtype=np.float64)
+    train_over = np.where(
+        np.isfinite(train_total_line) & np.isfinite(train_runs_actual),
+        (train_runs_actual > train_total_line).astype(np.float64),
+        np.nan,
+    )
+
+    val_total_line = pd.to_numeric(
+        valid_part["market_total_close"], errors="coerce"
+    ).to_numpy(dtype=np.float64)
+    val_runs_actual = (
+        pd.to_numeric(valid_part["target_home_score"], errors="coerce")
+        + pd.to_numeric(valid_part["target_away_score"], errors="coerce")
+    ).to_numpy(dtype=np.float64)
+    val_over = np.where(
+        np.isfinite(val_total_line) & np.isfinite(val_runs_actual),
+        (val_runs_actual > val_total_line).astype(np.float64),
+        np.nan,
+    )
+
+    try:
+        totals_model = train_totals_model(
+            X_home_train[mh_train],
+            train_over[mh_train],
+            feat_cols,
+            X_val=X_home_val[mh_val],
+            y_val=val_over[mh_val],
+        )
+        p_over_direct = totals_model.predict(X_home_test[valid_mask])
+        # Where the test row has no closing total, the direct prediction is
+        # not meaningful (the model was trained against an over/under wrt
+        # the line); fall back to the simulated probability.
+        no_line = ~np.isfinite(total_lines)
+        if no_line.any():
+            sim_p = np.array([p.p_total_over for p in preds], dtype=np.float64)
+            p_over_direct = np.where(no_line, sim_p, p_over_direct)
+        for i, pred in enumerate(preds):
+            pred.p_total_over = float(p_over_direct[i])
+    except ValueError as exc:
+        log.warning("totals_model.skipped", season=target_season, reason=str(exc))
 
     scored = _label_outcomes(test_use, preds)
 
