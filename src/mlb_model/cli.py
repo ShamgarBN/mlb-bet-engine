@@ -134,7 +134,6 @@ def train(
     spec = fit_spec(features)
     feat_path = _settings.model_dir / "feature_spec.joblib"
     _settings.model_dir.mkdir(parents=True, exist_ok=True)
-    joblib.dump(spec, feat_path, compress=("zlib", 3))
 
     # ---- final production models on ALL data ----
     features_sorted = features.sort_values("game_date").reset_index(drop=True)
@@ -144,6 +143,9 @@ def train(
 
     X_home_t, mh_t, feat_cols = build_runs_matrix(train_part, spec)
     X_away_t, ma_t, _ = build_runs_matrix_away(train_part, spec)
+    # Persist the locked column list with the spec so inference matches.
+    spec.final_feature_cols = feat_cols
+    joblib.dump(spec, feat_path, compress=("zlib", 3))
     X_home_v, mh_v, _ = build_runs_matrix(val_part, spec)
     X_away_v, ma_v, _ = build_runs_matrix_away(val_part, spec)
 

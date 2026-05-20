@@ -57,6 +57,10 @@ class FeatureSpec:
     away_feature_cols: list[str] = field(default_factory=list)
     game_feature_cols: list[str] = field(default_factory=list)
     medians: dict[str, float] = field(default_factory=dict)
+    # Exact final column order produced during training, including the
+    # one-hot dummies. The matrix builders use this when present so the
+    # feature dimension is identical between train and inference.
+    final_feature_cols: list[str] = field(default_factory=list)
 
     def all_cols(self) -> list[str]:
         return self.home_feature_cols + self.away_feature_cols + self.game_feature_cols
@@ -167,24 +171,33 @@ def build_runs_matrix(features: pd.DataFrame, spec: FeatureSpec) -> tuple[np.nda
 
     For the *away runs* model we just swap home/away by transposition --
     see ``build_runs_matrix_away``.
+
+    If ``spec.final_feature_cols`` is populated (i.e. it was recorded
+    during training), the returned matrix is forced to have exactly those
+    columns in that order -- missing dummies are filled with zeros and
+    surplus dummies (categorical values not seen at training time) are
+    dropped. This is the only way to keep the inference matrix shape-
+    compatible with the trained LightGBM booster.
     """
     transformed = transform(features, spec)
 
-    feature_cols = (
-        spec.home_feature_cols + spec.away_feature_cols + spec.game_feature_cols
-    )
-    # After one-hot, some categorical columns turn into multiple dummy columns;
-    # include any new dummy columns whose prefix matches a categorical.
-    extra_dummy_cols = [
-        c for c in transformed.columns
-        if any(c.startswith(prefix + "_") for prefix in CATEGORICAL_COLS)
-        and c not in feature_cols
-    ]
-    feature_cols = feature_cols + extra_dummy_cols
-
-    feature_cols = [c for c in feature_cols if c in transformed.columns]
-    # Drop the raw categorical columns themselves if they remain
-    feature_cols = [c for c in feature_cols if c not in CATEGORICAL_COLS]
+    if spec.final_feature_cols:
+        feature_cols = list(spec.final_feature_cols)
+        for c in feature_cols:
+            if c not in transformed.columns:
+                transformed[c] = 0.0
+    else:
+        feature_cols = (
+            spec.home_feature_cols + spec.away_feature_cols + spec.game_feature_cols
+        )
+        extra_dummy_cols = [
+            c for c in transformed.columns
+            if any(c.startswith(prefix + "_") for prefix in CATEGORICAL_COLS)
+            and c not in feature_cols
+        ]
+        feature_cols = feature_cols + extra_dummy_cols
+        feature_cols = [c for c in feature_cols if c in transformed.columns]
+        feature_cols = [c for c in feature_cols if c not in CATEGORICAL_COLS]
 
     X = transformed[feature_cols].to_numpy(dtype=np.float64)
     mask = np.isfinite(X).all(axis=1)
