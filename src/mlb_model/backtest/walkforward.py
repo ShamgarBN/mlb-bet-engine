@@ -126,6 +126,9 @@ def backtest_season(target_season: int, train_start: int) -> SeasonResult | None
 
     X_home_train, mh_train, feat_cols = build_runs_matrix(train_part, spec)
     X_away_train, ma_train, _ = build_runs_matrix_away(train_part, spec)
+    # Lock the column order so the test-time matrices use the same dummies
+    # even when 2026 introduces a categorical value 2018-2025 never saw.
+    spec.final_feature_cols = feat_cols
     X_home_val, mh_val, _ = build_runs_matrix(valid_part, spec)
     X_away_val, ma_val, _ = build_runs_matrix_away(valid_part, spec)
 
