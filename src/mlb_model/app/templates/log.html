@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}My picks{% endblock %}
+
+{% block content %}
+<section class="flex flex-col gap-6">
+
+  <div class="flex items-end justify-between flex-wrap gap-3">
+    <div>
+      <h1 class="text-3xl font-semibold text-white tracking-tight">My picks</h1>
+      <p class="text-sm text-chrome-400 mt-1">
+        Picks you logged from game-detail pages. Outcomes are graded automatically
+        once the box score is finalized. ROI assumes a flat -110 price; edit the
+        stake column to size picks unevenly.
+      </p>
+    </div>
+    <div class="flex items-center gap-2">
+      {% if rows|length > 0 %}
+      <a href="/api/export/log"
+         class="text-xs rounded-md border border-chrome-700 bg-chrome-800/60 hover:bg-chrome-700/60 text-chrome-200 px-3 py-1.5 inline-flex items-center gap-1.5">
+        <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><line x1="5" y1="21" x2="19" y2="21"/>
+        </svg>
+        Export CSV
+      </a>
+      <button
+          type="button"
+          onclick="if (confirm('Delete ALL logged picks? This cannot be undone.')) { fetch('/api/picks-log/clear', { method: 'POST' }).then(() => location.reload()); }"
+          class="text-xs rounded-md border border-rose-700/50 bg-rose-950/30 hover:bg-rose-900/40 text-rose-200 px-3 py-1.5">
+        Clear all
+      </button>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if summary %}
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-4">
+      <div class="text-[11px] uppercase tracking-widest text-chrome-500">Total picks</div>
+      <div class="mt-1 text-2xl font-mono font-semibold text-white">{{ summary.total }}</div>
+      <div class="text-xs text-chrome-500 mt-1">{{ summary.pending }} pending</div>
+    </div>
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-4">
+      <div class="text-[11px] uppercase tracking-widest text-chrome-500">Record</div>
+      <div class="mt-1 text-2xl font-mono font-semibold text-white">
+        {{ summary.get('wins') or 0 }}-{{ summary.get('losses') or 0 }}{% if summary.get('pushes') %}-{{ summary.pushes }}{% endif %}
+      </div>
+      <div class="text-xs text-chrome-500 mt-1">{{ summary.get('graded') or 0 }} graded</div>
+    </div>
+    {% set wr = summary.get('win_rate') %}
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-4">
+      <div class="text-[11px] uppercase tracking-widest text-chrome-500">Win rate</div>
+      <div class="mt-1 text-2xl font-mono font-semibold {{ 'text-brand-300' if (wr or 0) > 0.524 else 'text-amber-300' if (wr or 0) > 0.5 else 'text-rose-300' }}">
+        {{ wr | pct if wr is not none else '—' }}
+      </div>
+      <div class="text-xs text-chrome-500 mt-1">Break-even @ −110: 52.4%</div>
+    </div>
+    {% set units = summary.get('units') or 0 %}
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-4">
+      <div class="text-[11px] uppercase tracking-widest text-chrome-500">P/L (units)</div>
+      <div class="mt-1 text-2xl font-mono font-semibold {{ 'text-brand-300' if units > 0 else 'text-rose-300' if units < 0 else 'text-chrome-200' }}">
+        {{ '%+.2f' % units }}
+      </div>
+      <div class="text-xs text-chrome-500 mt-1">1 unit per pick</div>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if rows|length == 0 %}
+    <div class="rounded-lg border border-dashed border-chrome-700 bg-chrome-800/40 p-10 text-center">
+      <div class="text-chrome-400 text-sm">No picks logged yet.</div>
+      <div class="text-xs text-chrome-500 mt-2">
+        On <a href="/" class="underline text-chrome-300 hover:text-white">Today</a>,
+        click the <em>Log</em> button on any pick card, or open a game and log from there.
+      </div>
+      <div class="text-xs text-chrome-500 mt-3">
+        For ongoing accuracy across <em>every</em> prediction the model makes
+        (not just the ones you've flagged here), see
+        <a href="/season" class="underline text-chrome-300 hover:text-white">Season</a>.
+      </div>
+    </div>
+  {% else %}
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="text-[11px] uppercase tracking-wider text-chrome-500 bg-chrome-900/40">
+          <tr>
+            <th class="text-left  font-normal py-2 px-4">Date</th>
+            <th class="text-left  font-normal py-2 px-4">Game</th>
+            <th class="text-left  font-normal py-2 px-4">Market</th>
+            <th class="text-left  font-normal py-2 px-4">Pick</th>
+            <th class="text-right font-normal py-2 px-4">Model</th>
+            <th class="text-right font-normal py-2 px-4">Edge</th>
+            <th class="text-right font-normal py-2 px-4">Stake</th>
+            <th class="text-center font-normal py-2 px-4">Result</th>
+            <th class="text-right font-normal py-2 px-4">P / L</th>
+            <th class="text-right font-normal py-2 px-4 w-px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            {% set pid = r.get('pick_id', '') %}
+            <tr class="border-t border-chrome-800 hover:bg-chrome-700/30" id="pick-row-{{ pid }}">
+              <td class="px-4 py-1.5 font-mono text-chrome-300">{{ r.game_date }}</td>
+              <td class="px-4 py-1.5 font-mono">
+                <a href="/game/{{ r.game_pk }}?date={{ r.game_date }}" class="hover:text-white">
+                  {{ r.away_team_abbr }} @ {{ r.home_team_abbr }}
+                </a>
+              </td>
+              <td class="px-4 py-1.5 text-chrome-300 capitalize">{{ r.market }}</td>
+              <td class="px-4 py-1.5 text-white font-medium">{{ r.pick_long }}</td>
+              <td class="px-4 py-1.5 text-right font-mono text-chrome-200">{{ r.model_prob | pct }}</td>
+              <td class="px-4 py-1.5 text-right font-mono">
+                {% if r.edge_pp is not none %}{{ r.edge_pp | signed_pp }}{% else %}—{% endif %}
+              </td>
+              <td class="px-4 py-1.5 text-right">
+                <input type="number" min="0" step="0.5"
+                       value="{{ '%g' % (r.get('stake_units') or 1.0) }}"
+                       class="w-16 rounded border border-chrome-700/60 bg-chrome-900/60 px-1.5 py-0.5 text-right font-mono text-chrome-100 [color-scheme:dark]"
+                       onchange="
+                         fetch('/api/picks-log/update', {
+                           method: 'POST',
+                           headers: { 'Content-Type': 'application/json' },
+                           body: JSON.stringify({ pick_id: '{{ pid }}', stake_units: this.value })
+                         }).then(r => { if (r.ok) location.reload(); else this.classList.add('ring-2','ring-rose-500'); });
+                       ">
+              </td>
+              <td class="px-4 py-1.5 text-center">
+                {% set result = r.get('result', 'pending') %}
+                {% set styles = {
+                    'win':     ('text-brand-300','bg-brand-600/15'),
+                    'loss':    ('text-rose-300','bg-rose-700/20'),
+                    'push':    ('text-chrome-200','bg-chrome-700/40'),
+                    'pending': ('text-amber-300','bg-amber-700/20'),
+                }[result] %}
+                <span class="text-[11px] uppercase tracking-wider px-2 py-0.5 rounded-full {{ styles[0] }} {{ styles[1] }}">{{ result }}</span>
+              </td>
+              <td class="px-4 py-1.5 text-right font-mono
+                         {{ 'text-brand-300' if (r.roi_units or 0) > 0 else 'text-rose-300' if (r.roi_units or 0) < 0 else 'text-chrome-400' }}">
+                {% if r.roi_units is not none and r.roi_units == r.roi_units %}
+                  {{ '%+.2f' % r.roi_units }}
+                {% else %}—{% endif %}
+              </td>
+              <td class="px-2 py-1.5 text-right">
+                <button
+                    type="button"
+                    title="Delete this pick"
+                    aria-label="Delete pick"
+                    onclick="
+                      if (!confirm('Delete this pick?')) return;
+                      fetch('/api/picks-log/delete', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ pick_id: '{{ pid }}' })
+                      }).then(r => { if (r.ok) document.getElementById('pick-row-{{ pid }}').remove(); });
+                    "
+                    class="rounded-md p-1.5 text-chrome-500 hover:text-rose-300 hover:bg-rose-950/40">
+                  <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                    <path d="M10 11v6M14 11v6"/>
+                    <path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/>
+                  </svg>
+                </button>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+
+</section>
+{% endblock %}

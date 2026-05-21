@@ -181,8 +181,11 @@ def build_runs_matrix(features: pd.DataFrame, spec: FeatureSpec) -> tuple[np.nda
     """
     transformed = transform(features, spec)
 
-    if spec.final_feature_cols:
-        feature_cols = list(spec.final_feature_cols)
+    # ``final_feature_cols`` was added later; older persisted specs may
+    # lack the attribute entirely. Treat that the same as "not populated".
+    locked_cols = getattr(spec, "final_feature_cols", None)
+    if locked_cols:
+        feature_cols = list(locked_cols)
         for c in feature_cols:
             if c not in transformed.columns:
                 transformed[c] = 0.0

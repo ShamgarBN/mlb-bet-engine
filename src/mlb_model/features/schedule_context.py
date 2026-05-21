@@ -39,13 +39,25 @@ def build_schedule_context(season_start: int, season_end: int) -> pd.DataFrame:
       team_id, game_pk, game_date, is_home,
       days_rest, travel_miles, is_getaway_day, is_doubleheader_leg2
     """
+    # Subtle bug we used to ship: ``games.venue_id`` is the MLB Stats
+    # API's venue_id, but ``venues.venue_id`` is a synthetic hash of the
+    # home-team abbreviation (see ``data/venues_seed.py``). Joining the
+    # two produced no matches, so ``venue_lat`` / ``venue_lon`` were
+    # always NULL and ``travel_miles`` was always 0 for every team-game.
+    # The signal was silently absent from the model.
+    #
+    # The home venue's lat/lon is uniquely determined by the home team
+    # abbr (one park per team, dome+altitude included in the seed), so
+    # joining on team abbr gives us the geometry we actually want.
     games = query(
         """
         SELECT g.game_pk, g.game_date, g.season, g.home_team_id, g.away_team_id,
+               g.home_team_abbr, g.away_team_abbr,
                g.doubleheader, g.game_number, g.venue_id,
-               v.latitude AS venue_lat, v.longitude AS venue_lon
+               v.latitude  AS venue_lat,
+               v.longitude AS venue_lon
         FROM games g
-        LEFT JOIN venues v ON v.venue_id = g.venue_id
+        LEFT JOIN venues v ON v.team_abbr = g.home_team_abbr
         WHERE g.season BETWEEN ? AND ?
         ORDER BY g.game_date, g.game_pk
         """,

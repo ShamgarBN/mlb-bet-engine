@@ -1,0 +1,415 @@
+{% extends "base.html" %}
+{% block title %}Season{% endblock %}
+
+{% block content %}
+<section class="space-y-6">
+  <!-- Header + season selector -->
+  <div class="flex flex-wrap items-end justify-between gap-4">
+    <div>
+      <h1 class="text-2xl font-semibold text-white">
+        Season performance
+        {% if season %}<span class="text-chrome-500 font-normal">· {{ season }}</span>{% endif %}
+      </h1>
+      <p class="text-sm text-chrome-400 mt-1 max-w-2xl">
+        Every prediction the model has made this season, graded against the actual outcome.
+        Unlike <a href="/log" class="underline decoration-chrome-700 hover:text-chrome-200">My picks</a>
+        (only the ones you flagged), this view is the model's full track record &mdash;
+        the honest answer to "how accurate is it really?"
+      </p>
+      <details class="text-xs text-chrome-500 mt-2 max-w-2xl">
+        <summary class="cursor-pointer text-chrome-400 hover:text-chrome-200 select-none">
+          What do these numbers mean?
+        </summary>
+        <dl class="mt-2 grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1.5 text-chrome-400">
+          <div><dt class="inline font-semibold text-chrome-300">Win rate</dt> <dd class="inline">— wins ÷ (wins + losses); pushes excluded.</dd></div>
+          <div><dt class="inline font-semibold text-chrome-300">P/L</dt> <dd class="inline">— units gained/lost assuming a flat −110 price.</dd></div>
+          <div><dt class="inline font-semibold text-chrome-300">CLV*</dt> <dd class="inline">— mean edge (model − market, in percentage points) at posting time. Sustained &gt; 0 = beating closing line.</dd></div>
+          <div><dt class="inline font-semibold text-chrome-300">Brier</dt> <dd class="inline">— mean squared error of model probabilities. Lower is better.</dd></div>
+          <div><dt class="inline font-semibold text-chrome-300">Log-loss</dt> <dd class="inline">— logarithmic scoring rule. Lower is better.</dd></div>
+          <div><dt class="inline font-semibold text-chrome-300">Tier</dt> <dd class="inline">— premium ≥ 70% · strong ≥ 50% · edge ≥ 30% · lean ≥ 15%.</dd></div>
+          <div><dt class="inline font-semibold text-chrome-300">Baseline total</dt> <dd class="inline">— when no market O/U line is posted, the model uses the season's league-average total instead.</dd></div>
+        </dl>
+      </details>
+    </div>
+    <div class="flex items-center gap-2 text-sm">
+      {% if available_seasons %}
+      <form method="get" action="/season" class="flex items-center gap-2">
+        <label class="text-chrome-400">Season:</label>
+        <select name="season"
+                onchange="this.form.submit()"
+                class="rounded-md border border-chrome-700/60 bg-chrome-800/60 text-chrome-100 px-3 py-1.5 [color-scheme:dark]">
+          {% for s in available_seasons %}
+            <option value="{{ s }}" {{ 'selected' if s == season else '' }}>{{ s }}</option>
+          {% endfor %}
+        </select>
+      </form>
+      {% endif %}
+      {% if summary %}
+      <a href="/api/export/journal{% if season %}?season={{ season }}{% endif %}"
+         class="text-xs rounded-md border border-chrome-700 bg-chrome-800/60 hover:bg-chrome-700/60 text-chrome-200 px-3 py-1.5 inline-flex items-center gap-1.5">
+        <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><line x1="5" y1="21" x2="19" y2="21"/>
+        </svg>
+        Export CSV
+      </a>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if eos_report %}
+    <!-- End-of-season report banner -->
+    <div class="rounded-xl border border-brand-700/50 bg-brand-950/30 p-4 flex flex-wrap items-center gap-3">
+      <div class="h-9 w-9 rounded-full bg-brand-600/30 flex items-center justify-center shrink-0">
+        <svg viewBox="0 0 24 24" class="h-5 w-5 text-brand-300" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="9" y1="13" x2="15" y2="13"/>
+          <line x1="9" y1="17" x2="13" y2="17"/>
+        </svg>
+      </div>
+      <div class="flex-1">
+        <div class="text-sm font-semibold text-brand-200">
+          End-of-season report available for {{ season }}
+        </div>
+        <div class="text-xs text-chrome-400 mt-0.5">
+          Deep self-evaluation written when this season finished:
+          worst-performing slices, recommendations for next year, model archive.
+        </div>
+      </div>
+      <a href="/api/season/report?season={{ season }}"
+         target="_blank"
+         class="text-xs rounded-md bg-brand-600 hover:bg-brand-500 text-white px-3 py-1.5 inline-flex items-center gap-1.5">
+        Open report
+        <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M7 17L17 7"/><polyline points="7 7 17 7 17 17"/>
+        </svg>
+      </a>
+    </div>
+  {% endif %}
+
+  {% if not summary %}
+    <!-- Empty state -->
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-10 text-center">
+      <div class="mx-auto mb-4 h-12 w-12 rounded-full bg-brand-600/20 flex items-center justify-center">
+        <svg viewBox="0 0 24 24" class="h-6 w-6 text-brand-400" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 3v18h18M7 14l4-4 4 4 5-5"/>
+        </svg>
+      </div>
+      <h2 class="text-lg font-semibold text-white mb-1">No graded predictions yet</h2>
+      <p class="text-sm text-chrome-400 max-w-md mx-auto">
+        Once you visit <a href="/" class="text-brand-300 underline">Today</a> and a few of those games
+        finalize, this page will start tracking the model's running accuracy.
+        {% if journal_size %}
+          <br><span class="text-chrome-500">({{ journal_size }} predictions recorded, none graded yet.)</span>
+        {% endif %}
+      </p>
+    </div>
+  {% else %}
+
+    <!-- Per-market headline cards -->
+    <div class="grid gap-4 md:grid-cols-3">
+      {% for row in summary %}
+        <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5">
+          <div class="flex items-center justify-between">
+            <div class="text-[11px] uppercase tracking-widest text-chrome-500">{{ row.market }}</div>
+            <div class="text-[10px] uppercase tracking-wider text-chrome-400 px-1.5 py-0.5 rounded bg-chrome-700/40">
+              n = {{ row.n }}
+              {% if row.pending %}<span class="text-amber-300 ml-1">+{{ row.pending }} pending</span>{% endif %}
+            </div>
+          </div>
+          <div class="mt-2 flex items-baseline gap-3">
+            <div class="text-3xl font-semibold text-white font-mono">
+              {% if row.win_rate is not none and row.win_rate == row.win_rate %}
+                {{ (row.win_rate * 100) | round(1) }}%
+              {% else %}
+                —
+              {% endif %}
+            </div>
+            <div class="text-sm text-chrome-400 font-mono">
+              {{ row.wins }}-{{ row.losses }}{% if row.pushes %}-{{ row.pushes }}{% endif %}
+            </div>
+          </div>
+          <div class="mt-3 grid grid-cols-4 gap-3 text-xs">
+            <div title="Profit/loss in betting units, assuming a flat -110 price.">
+              <div class="text-chrome-500">P/L</div>
+              <div class="font-mono mt-0.5 {{ 'text-brand-300' if row.roi_units > 0 else 'text-rose-300' if row.roi_units < 0 else 'text-chrome-300' }}">
+                {{ '%+.2f' % row.roi_units }}u
+              </div>
+            </div>
+            <div title="Mean edge (model_prob − market_prob) at the time we posted each graded pick. Sustained positive values are the strongest evidence we are beating closing lines.">
+              <div class="text-chrome-500">CLV*</div>
+              <div class="font-mono mt-0.5 {{ 'text-brand-300' if (row.mean_edge_pp or 0) > 0 else 'text-rose-300' if (row.mean_edge_pp or 0) < 0 else 'text-chrome-300' }}">
+                {% if row.mean_edge_pp == row.mean_edge_pp %}{{ '%+.2f' % row.mean_edge_pp }}pp{% else %}—{% endif %}
+              </div>
+            </div>
+            <div title="Lower is better. Mean squared error of the model's probabilities.">
+              <div class="text-chrome-500">Brier</div>
+              <div class="font-mono mt-0.5 text-chrome-200">
+                {% if row.brier == row.brier %}{{ '%.3f' % row.brier }}{% else %}—{% endif %}
+              </div>
+            </div>
+            <div title="Lower is better. Log-loss of the model's probabilities.">
+              <div class="text-chrome-500">Log-loss</div>
+              <div class="font-mono mt-0.5 text-chrome-200">
+                {% if row.log_loss == row.log_loss %}{{ '%.3f' % row.log_loss }}{% else %}—{% endif %}
+              </div>
+            </div>
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+
+    <!-- Rolling accuracy + calibration -->
+    <div class="grid gap-4 lg:grid-cols-2">
+      <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-semibold text-white uppercase tracking-widest">Rolling 30-day accuracy</h2>
+          <span class="text-[10px] uppercase tracking-wider text-chrome-500">all markets</span>
+        </div>
+        <div class="h-64"><canvas id="rolling-chart"></canvas></div>
+        <p class="text-xs text-chrome-500 mt-3">
+          Each point is the model's win rate on graded picks in the trailing 30 days.
+          A flat line near 0.55 is the realistic ceiling for moneyline on raw public data.
+        </p>
+      </div>
+
+      <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-sm font-semibold text-white uppercase tracking-widest">Calibration</h2>
+          <span class="text-[10px] uppercase tracking-wider text-chrome-500">moneyline</span>
+        </div>
+        <div class="h-64"><canvas id="calibration-chart"></canvas></div>
+        <p class="text-xs text-chrome-500 mt-3">
+          A perfectly calibrated model sits on the diagonal &mdash; e.g. predictions of 65%
+          should actually win 65% of the time. Points well above the line mean the model is
+          over-confident; below means under-confident.
+        </p>
+      </div>
+    </div>
+
+    <!-- Per-tier breakdown -->
+    {% if tier_breakdown %}
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 overflow-x-auto">
+      <div class="flex items-center justify-between p-5 pb-3">
+        <h2 class="text-sm font-semibold text-white uppercase tracking-widest">By confidence tier</h2>
+        <span class="text-[10px] uppercase tracking-wider text-chrome-500">
+          higher tier = higher edge = bigger expected win rate
+        </span>
+      </div>
+      <table class="w-full text-sm">
+        <thead class="text-[11px] uppercase tracking-wider text-chrome-500 bg-chrome-900/40">
+          <tr>
+            <th class="text-left font-normal py-2 px-4">Market</th>
+            <th class="text-left font-normal py-2 px-4">Tier</th>
+            <th class="text-right font-normal py-2 px-4">N</th>
+            <th class="text-right font-normal py-2 px-4">W-L-P</th>
+            <th class="text-right font-normal py-2 px-4">Win %</th>
+            <th class="text-right font-normal py-2 px-4">Units</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for market, rows in tier_breakdown.items() %}
+            {% for r in rows %}
+              <tr class="border-t border-chrome-800 hover:bg-chrome-700/30">
+                <td class="px-4 py-1.5 text-chrome-300 capitalize">{{ market }}</td>
+                <td class="px-4 py-1.5 text-white capitalize">{{ r.tier or '—' }}</td>
+                <td class="px-4 py-1.5 text-right font-mono">{{ r.n | int }}</td>
+                <td class="px-4 py-1.5 text-right font-mono text-chrome-300">
+                  {{ r.wins | int }}-{{ r.losses | int }}{% if r.pushes %}-{{ r.pushes | int }}{% endif %}
+                </td>
+                <td class="px-4 py-1.5 text-right font-mono
+                           {{ 'text-brand-300' if (r.win_rate or 0) > 0.55 else 'text-chrome-200' }}">
+                  {% if r.win_rate is not none and r.win_rate == r.win_rate %}
+                    {{ (r.win_rate * 100) | round(1) }}%
+                  {% else %}—{% endif %}
+                </td>
+                <td class="px-4 py-1.5 text-right font-mono
+                           {{ 'text-brand-300' if (r.roi or 0) > 0 else 'text-rose-300' if (r.roi or 0) < 0 else 'text-chrome-300' }}">
+                  {{ '%+.2f' % (r.roi or 0) }}
+                </td>
+              </tr>
+            {% endfor %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    <!-- Recent graded picks tail -->
+    {% if recent_results %}
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 overflow-x-auto">
+      <div class="flex items-center justify-between p-5 pb-3">
+        <h2 class="text-sm font-semibold text-white uppercase tracking-widest">Last 50 graded picks</h2>
+        <span class="text-[10px] uppercase tracking-wider text-chrome-500">most recent first</span>
+      </div>
+      <table class="w-full text-sm">
+        <thead class="text-[11px] uppercase tracking-wider text-chrome-500 bg-chrome-900/40">
+          <tr>
+            <th class="text-left  font-normal py-2 px-4">Date</th>
+            <th class="text-left  font-normal py-2 px-4">Game</th>
+            <th class="text-left  font-normal py-2 px-4">Market</th>
+            <th class="text-left  font-normal py-2 px-4">Pick</th>
+            <th class="text-right font-normal py-2 px-4">Model</th>
+            <th class="text-left  font-normal py-2 px-4">Tier</th>
+            <th class="text-center font-normal py-2 px-4">Result</th>
+            <th class="text-right font-normal py-2 px-4">P/L</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in recent_results %}
+            <tr class="border-t border-chrome-800 hover:bg-chrome-700/30">
+              <td class="px-4 py-1.5 font-mono text-chrome-300">{{ r.game_date }}</td>
+              <td class="px-4 py-1.5 font-mono">{{ r.away_team_abbr }} @ {{ r.home_team_abbr }}</td>
+              <td class="px-4 py-1.5 text-chrome-300 capitalize">{{ r.market }}</td>
+              <td class="px-4 py-1.5 text-white font-medium">{{ r.pick_long }}</td>
+              <td class="px-4 py-1.5 text-right font-mono text-chrome-200">{{ r.model_prob | pct }}</td>
+              <td class="px-4 py-1.5 text-chrome-300 capitalize">{{ r.tier or '—' }}</td>
+              <td class="px-4 py-1.5 text-center">
+                {% set styles = {
+                    'win':     ('text-brand-300','bg-brand-600/15'),
+                    'loss':    ('text-rose-300','bg-rose-700/20'),
+                    'push':    ('text-chrome-200','bg-chrome-700/40'),
+                }.get(r.result, ('text-amber-300','bg-amber-700/20')) %}
+                <span class="text-[11px] uppercase tracking-wider px-2 py-0.5 rounded-full {{ styles[0] }} {{ styles[1] }}">{{ r.result }}</span>
+              </td>
+              <td class="px-4 py-1.5 text-right font-mono
+                         {{ 'text-brand-300' if (r.roi_units or 0) > 0 else 'text-rose-300' if (r.roi_units or 0) < 0 else 'text-chrome-400' }}">
+                {% if r.roi_units is not none and r.roi_units == r.roi_units %}
+                  {{ '%+.2f' % r.roi_units }}
+                {% else %}—{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+  {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+{% if summary %}
+<script>
+  (function() {
+    const rolling = {{ rolling | tojson }};
+    const calibration = {{ calibration | tojson }};
+
+    // ------------------------------------------------------------- rolling
+    const rollingCanvas = document.getElementById('rolling-chart');
+    if (rollingCanvas && Object.keys(rolling).length) {
+      const colors = {
+        moneyline: '#86efac',
+        runline:   '#fbbf24',
+        total:     '#60a5fa',
+      };
+      const datasets = Object.entries(rolling).map(([market, rows]) => ({
+        label: market,
+        data: rows
+          .filter(r => r.win_rate !== null && r.win_rate !== undefined && r.win_rate === r.win_rate)
+          .map(r => ({ x: r.game_date, y: r.win_rate })),
+        borderColor: colors[market] || '#a78bfa',
+        backgroundColor: (colors[market] || '#a78bfa') + '20',
+        borderWidth: 2,
+        pointRadius: 0,
+        tension: 0.2,
+      }));
+      new Chart(rollingCanvas, {
+        type: 'line',
+        data: { datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'nearest', axis: 'x', intersect: false },
+          plugins: {
+            legend: { labels: { color: '#94a3b8' } },
+            tooltip: {
+              callbacks: {
+                label: c => `${c.dataset.label}: ${(c.parsed.y * 100).toFixed(1)}%`,
+              },
+            },
+          },
+          scales: {
+            x: {
+              type: 'time',
+              time: { unit: 'week' },
+              ticks: { color: '#64748b' },
+              grid: { color: 'rgba(100, 116, 139, 0.1)' },
+            },
+            y: {
+              min: 0.3,
+              max: 0.7,
+              ticks: {
+                color: '#64748b',
+                callback: v => (v * 100).toFixed(0) + '%',
+              },
+              grid: { color: 'rgba(100, 116, 139, 0.1)' },
+            },
+          },
+        },
+      });
+    }
+
+    // ------------------------------------------------------------- calibration
+    const calCanvas = document.getElementById('calibration-chart');
+    const mlBins = calibration['moneyline'] || [];
+    if (calCanvas && mlBins.length) {
+      const points = mlBins
+        .filter(b => b.n && b.n > 0)
+        .map(b => ({ x: b.forecast_mean, y: b.realized_rate, r: Math.min(20, 3 + Math.sqrt(b.n)) }));
+      new Chart(calCanvas, {
+        type: 'bubble',
+        data: {
+          datasets: [
+            {
+              label: 'observed',
+              data: points,
+              backgroundColor: '#86efac80',
+              borderColor: '#22c55e',
+              borderWidth: 1,
+            },
+            {
+              type: 'line',
+              label: 'perfect',
+              data: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+              borderColor: '#64748b',
+              borderDash: [4, 4],
+              borderWidth: 1,
+              pointRadius: 0,
+              fill: false,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { labels: { color: '#94a3b8' } },
+            tooltip: {
+              callbacks: {
+                label: c => `forecast ${(c.parsed.x * 100).toFixed(0)}% → realized ${(c.parsed.y * 100).toFixed(0)}% (n=${c.raw.r ? Math.round((c.raw.r - 3) ** 2) : '?'})`,
+              },
+            },
+          },
+          scales: {
+            x: {
+              title: { display: true, text: 'Forecast probability', color: '#94a3b8' },
+              min: 0, max: 1,
+              ticks: { color: '#64748b', callback: v => (v * 100).toFixed(0) + '%' },
+              grid: { color: 'rgba(100, 116, 139, 0.1)' },
+            },
+            y: {
+              title: { display: true, text: 'Realized win rate', color: '#94a3b8' },
+              min: 0, max: 1,
+              ticks: { color: '#64748b', callback: v => (v * 100).toFixed(0) + '%' },
+              grid: { color: 'rgba(100, 116, 139, 0.1)' },
+            },
+          },
+        },
+      });
+    }
+  })();
+</script>
+{% endif %}
+{% endblock %}
