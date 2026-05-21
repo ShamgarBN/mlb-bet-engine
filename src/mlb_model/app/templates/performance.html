@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}Performance{% endblock %}
+
+{% block content %}
+<section class="flex flex-col gap-6">
+
+  <div class="flex items-end justify-between flex-wrap gap-3">
+    <div>
+      <h1 class="text-3xl font-semibold text-white tracking-tight">Model performance</h1>
+      <p class="text-sm text-chrome-400 mt-1">
+        Walk-forward backtest results. Each season's training set ends the year prior; the
+        model never sees future games when scoring a season.
+      </p>
+    </div>
+    {% if rows|length > 0 %}
+    <a href="/api/export/backtest"
+       class="text-xs rounded-md border border-chrome-700 bg-chrome-800/60 hover:bg-chrome-700/60 text-chrome-200 px-3 py-1.5 inline-flex items-center gap-1.5">
+      <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><line x1="5" y1="21" x2="19" y2="21"/>
+      </svg>
+      Export CSV
+    </a>
+    {% endif %}
+  </div>
+
+  <!-- Headline numbers ------------------------------------------------- -->
+  {% if headline %}
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+    {% for mkt, label in [('moneyline','Moneyline'), ('runline','Run line'), ('total','Over / Under')] %}
+      {% set h = headline.get(mkt) %}
+      <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5">
+        <div class="text-[11px] uppercase tracking-widest text-chrome-500">{{ label }}</div>
+        {% if h %}
+          <div class="mt-2 text-3xl font-semibold font-mono text-white">{{ h.accuracy | pct }}</div>
+          <div class="text-xs text-chrome-500 mt-1">{{ h.sample_size }} games · recent 6 seasons</div>
+        {% else %}
+          <div class="mt-2 text-chrome-400 text-sm">No data.</div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <!-- Season-by-season table ------------------------------------------ -->
+  <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60">
+    <div class="flex items-center justify-between p-5 border-b border-chrome-700/60">
+      <h2 class="text-sm font-semibold text-white">Backtest by season &amp; tier</h2>
+      <div class="text-xs text-chrome-500">Tier = top % of games by confidence</div>
+    </div>
+
+    {% if rows|length == 0 %}
+      <div class="p-10 text-center text-sm text-chrome-500">
+        No backtest CSVs found in <code class="font-mono">logs/</code>.
+        Run <code class="font-mono">mlb-model backtest --start 2019 --end 2025</code>.
+      </div>
+    {% else %}
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="text-[11px] uppercase tracking-wider text-chrome-500 bg-chrome-900/40">
+          <tr>
+            {% set header_cols = rows[0].keys() | list %}
+            {% for col in header_cols %}
+              <th class="text-left font-normal py-2 px-4 whitespace-nowrap">{{ col.replace('_', ' ') }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            <tr class="border-t border-chrome-800 hover:bg-chrome-700/30">
+              {% for col, val in r.items() %}
+                <td class="py-1.5 px-4 font-mono whitespace-nowrap text-chrome-200">
+                  {% if val is number and val < 1 and val > 0 and col not in ('season','sample_size','market_correct') %}
+                    {{ val | pct }}
+                  {% elif val is number %}
+                    {{ val | round(3) }}
+                  {% else %}
+                    {{ val }}
+                  {% endif %}
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if season_2026 %}
+  <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60">
+    <div class="flex items-center justify-between p-5 border-b border-chrome-700/60">
+      <h2 class="text-sm font-semibold text-white">2026 season-to-date</h2>
+      <div class="text-xs text-chrome-500">Out-of-sample evaluation on live games</div>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="text-[11px] uppercase tracking-wider text-chrome-500 bg-chrome-900/40">
+          <tr>
+            {% for col in season_2026[0].keys() %}
+              <th class="text-left font-normal py-2 px-4">{{ col.replace('_', ' ') }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in season_2026 %}
+            <tr class="border-t border-chrome-800">
+              {% for col, val in r.items() %}
+                <td class="py-1.5 px-4 font-mono whitespace-nowrap text-chrome-200">
+                  {% if val is number and val < 1 and val > 0 and col not in ('sample_size',) %}
+                    {{ val | pct }}
+                  {% elif val is number %}
+                    {{ val | round(3) }}
+                  {% else %}
+                    {{ val }}
+                  {% endif %}
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+</section>
+{% endblock %}

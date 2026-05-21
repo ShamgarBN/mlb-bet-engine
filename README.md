@@ -1,7 +1,40 @@
-# MLB Prediction & Betting Model
+# MLB Bet Engine
 
-A free-data, honestly-calibrated MLB game prediction system covering moneyline,
-run line, and over/under markets. Walk-forward backtested 2014–present.
+[![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-64%20passing-brightgreen.svg)](#testing)
+[![Data sources](https://img.shields.io/badge/data-100%25%20free-success.svg)](#data-sources-all-free)
+
+A **free-data**, **honestly-calibrated** MLB game prediction system covering
+moneyline, run line, and over/under markets. Walk-forward backtested
+2014–present on 15,000+ games. Ships with a local desktop app (FastAPI +
+HTMX + pywebview) for daily picks, season-long accuracy tracking, and an
+automated end-of-season self-evaluation.
+
+> **No real-money betting.** This is a research / hobby project. The
+> code can recommend picks and grade itself; it does **not** place bets.
+> See the [Disclaimer](#disclaimer).
+
+## What makes this different
+
+Most public MLB models either over-promise ("80% on moneyline!") or
+under-deliver because they ignore the closing line as a feature.
+This one is built to be:
+
+- **Honest about ceilings.** The closing MLB line is one of the
+  sharpest single-game forecasts in sports. Anything claiming
+  &gt;70% on *all* games is selling you something. We publish the
+  full walk-forward numbers below — including the misses.
+- **Probabilistically calibrated.** Isotonic-calibrated outputs
+  mean a 65%-confidence pick really wins ~65% of the time. The
+  app shows a calibration curve so you can verify this yourself.
+- **Coherent across markets.** ML / RL / O/U come from the *same*
+  Monte Carlo simulation of the joint run distribution, so they
+  agree with each other instead of contradicting.
+- **Self-evaluating.** The model logs every prediction it ever makes
+  to an append-only journal. At the end of each season it writes a
+  full post-mortem (worst-performing slices, recommendations, model
+  archive) to `reports/end_of_season_<YEAR>/`.
 
 ## Honest performance targets vs. measured results
 
@@ -51,6 +84,42 @@ will render this table fresh.
 - **Umpire Scorecards** → plate umpire tendencies
 - **SportsBookReviewsOnline** → historical closing lines (backtest only)
 
+## What's modelled (feature set)
+
+The model takes a wide per-game row containing:
+
+- **Starting-pitcher form**: rolling 4-start FIP/K%/BB%/HR% (Statcast 2015+
+  when available, boxscore fallback otherwise), recency-weighted, with
+  handedness as a categorical feature.
+- **Lineup quality & platoon**: projected lineup xwOBA vs opposing-hand
+  pitchers; per-team batting form (wRC+ proxy) over 10 and 30 days.
+- **Bullpen quality + availability**: rolling ERA/WHIP/K-BB% per team,
+  plus IP **used in the last 1 / 3 / 7 days** so a gassed pen is
+  surfaced explicitly.
+- **Park factors**: 3-year rolling runs / HR / K factors, **plus a
+  handedness split** (runs-vs-LHP, runs-vs-RHP, HR-vs-LHP, HR-vs-RHP)
+  for parks with strong LHB/RHB asymmetry (Coors vs. Petco etc.).
+- **Schedule context**: days of rest, **great-circle travel miles since
+  last game**, get-away day flag, doubleheader leg 2 flag.
+- **Umpire tendencies**: career K%, BB%, and runs-per-game for the
+  plate ump (leakage-safe — computed strictly from prior games).
+- **Weather**: temperature, humidity, pressure, wind speed, and
+  **wind-out-to-CF** component (projected onto each park's compass
+  bearing), pulled from the right Open-Meteo endpoint for the date
+  (archive vs forecast).
+- **Market features**: de-vigged moneyline implied probability, runline
+  and O/U implied probabilities, line movement open→close.
+
+Stage A models predict each team's expected run distribution
+(LightGBM, mean+std). Stage B runs a Monte Carlo simulation with
+correlated home/away draws (a shared lognormal "game environment"
+multiplier captures shared run-scoring conditions that the marginal
+models can't), an outcome-weighted extra-innings tiebreak, and reads
+off the ML / RL / O/U probabilities. A separate direct LightGBM
+classifier produces P(over) whenever a market line is available, and
+isotonic calibrators trained on the **same** OOF distribution the
+inference path produces ensure outputs are well-calibrated.
+
 ## Architecture
 
 ```
@@ -60,12 +129,32 @@ Raw data  →  Cleaned facts  →  Engineered features  →  Two-stage model  �
                                                        Stage B: MC sim)
 ```
 
+## Installation
+
+Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/) (a fast
+Python package manager). On macOS:
+
+```bash
+# install uv if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# clone + sync (installs Python 3.13 if needed)
+git clone https://github.com/ShamgarBN/mlb-bet-engine.git
+cd mlb-bet-engine
+uv sync --all-extras
+
+# verify everything imports + tests pass
+uv run pytest
+```
+
+> **`data/` and `models/` are gitignored.** Cloning gets you the code,
+> not 3.9 GB of warehouse parquet + trained model artifacts. Run the
+> data-pull + train commands below to rebuild locally; everything is
+> pulled fresh from public sources.
+
 ## Quick start
 
 ```bash
-# 0) install deps (one-time)
-uv sync --all-extras
-
 # 1) build the warehouse + seed venue metadata
 uv run mlb-model data init
 
@@ -85,6 +174,175 @@ uv run mlb-model train --through-season 2024 --train-start 2018
 
 # 6) produce today's picks (probable pitchers + weather refreshed automatically)
 uv run mlb-model predict --date today
+
+# 7) or launch the local desktop app
+uv run mlb-model serve
+```
+
+## Desktop app
+
+Three ways to open the app, in order of "least friction":
+
+1. **Double-click `MLB Forecast.app`** in the repo root. macOS launches a
+   native window via pywebview (WebKit). No browser tab, no terminal, no
+   visible server. Drag the bundle to `/Applications` to pin it to the
+   Dock.
+2. **Double-click `Launch MLB Forecast.command`**. Same as above, but with
+   a visible terminal so you can see logs (useful for debugging).
+3. **`uv run mlb-model app`** in a terminal — identical to the .app
+   bundle. Or `uv run mlb-model serve --port 8765` for a browser-tab
+   experience.
+
+Everything binds to `127.0.0.1` only — never exposed to the network.
+
+Pages:
+
+- `/` — **Today's slate**, ranked by model confidence, filterable by market
+  (ML / RL / OU) and confidence tier. O/U picks now show for every game:
+  when no closing market total is available we fall back to the
+  season-aware league average and mark the line with "vs. lg avg".
+  A search box filters by team abbr or pitcher name; every card has a
+  one-click **Log** button that appends to your picks tracker without
+  navigating away; a CSV export button on each page downloads the
+  currently-visible table.
+- `/game/<game_pk>` — **Game detail** with the predicted run distribution,
+  pitching matchup, weather, leakage-safe feature drivers, and a "try a
+  different line" input that recomputes p(over) against any total in
+  real time.
+- `/season` — **Ongoing model accuracy** for the current season. Every
+  prediction the model has ever produced is logged to an append-only
+  journal (`data/journal/predictions.parquet`), auto-graded against
+  finalized scores, and rendered as per-market summaries (win rate, P/L,
+  **CLV proxy** = mean edge at posting time, Brier, log-loss), a
+  rolling-30-day win-rate chart, a calibration curve (does 65%-confidence
+  actually win 65% of the time?), and a per-tier breakdown. This view is
+  the honest answer to "how is the model doing right now?" — it's not
+  filtered down to picks you tagged. When an end-of-season report
+  exists for the selected season, a banner links to the report's
+  markdown. A "What do these numbers mean?" disclosure inlines a
+  glossary of every metric.
+- `/performance` — Walk-forward backtest table + 2026 season-to-date.
+- `/log` — Your **logged picks** with stake editing, per-row delete, and
+  a "clear all" button. Outcomes auto-grade once the box score finalizes;
+  ROI scales by stake.
+
+### Season-long tracking and end-of-season self-evaluation
+
+The tool is designed to be useful season after season. Three pieces:
+
+1. **Prediction journal** (`data/journal/predictions.parquet`)
+   — every time the model produces a slate, a row is appended for each
+   game × market. Survives morning-sync cache invalidations and model
+   retraining. Read it via the `/season` page or:
+   ```bash
+   uv run mlb-model journal-grade               # current season
+   uv run mlb-model journal-grade --season 2027 # any season in the journal
+   ```
+
+2. **Season state detection**:
+   ```bash
+   uv run mlb-model season-status
+   ```
+   Returns one of `pre_season` / `in_progress` / `ended` / `off_season`.
+   The weekly retrain uses this to know when to trigger the end-of-season
+   sweep.
+
+3. **End-of-season sweep**:
+   ```bash
+   uv run mlb-model end-of-season --season 2026
+   ```
+   Once the regular season finishes, this writes a full self-evaluation
+   to `reports/end_of_season_<YEAR>/`:
+   - `report.md` — human-readable post-mortem with per-market performance,
+     worst-performing slices (e.g. "day games went 42% / -3.7u"), and
+     off-season recommendations
+   - `summary.json` — diffable metrics for year-over-year comparison
+   - `backtest.csv` — walk-forward results across every season trained
+   - `slices.csv` — full slice breakdown
+   - `model_of_record_<YEAR>/` — frozen copy of the model that produced
+     this season's live predictions
+   - `predictions_journal_snapshot.parquet` — frozen journal
+
+   The weekly-train job runs this **automatically** on the first Sunday
+   after the regular season ends — the user doesn't have to remember.
+   It's idempotent: subsequent Sundays in the off-season see the
+   existing `summary.json` and skip.
+
+### Automated data refresh and self-improvement
+
+Two background jobs keep the app honest:
+
+- **Morning sync** (`mlb-model morning-sync`): pulls yesterday's finalized
+  scores so the picks log can grade itself, refreshes today's schedule /
+  probable pitchers / weather (including a real **forecast-endpoint**
+  pull for future games — historically we only had archive weather), and
+  invalidates the prediction cache. Footer state is honest: it shows
+  the last *fully successful* run, not just "we attempted something",
+  and turns amber/red when the data is stale or only partially synced.
+  On macOS, if today's slate contains a premium-tier pick the sync
+  emits a single Notification Center alert (deduped per day).
+- **Weekly retrain** (`mlb-model weekly-train`): on Sundays, archives the
+  current model files, refits on a fresh 6-year window, and validates
+  the new model against the last 14 days. If the moneyline accuracy
+  regresses by more than 2 pp the previous model is restored
+  automatically. Up to 5 archives are kept under `models/archive/`.
+
+Both run **lazily on app launch** (in a background thread), so you don't
+need cron. To make them run unconditionally at a fixed time, install the
+macOS LaunchAgents:
+
+```bash
+uv run mlb-model install-schedule      # 07:00 daily + 03:00 Sunday
+uv run mlb-model install-schedule --uninstall
+```
+
+The app footer shows the last successful run of each job.
+
+### Moving the project to another Mac
+
+The .app bundle is just a 30 KB launcher -- it can't run on its own. To
+transfer everything to a second laptop:
+
+```bash
+./scripts/package_for_transfer.sh             # default: ~25 MB tarball
+./scripts/package_for_transfer.sh --full      # ~1 GB; includes HTTP cache
+```
+
+This produces `~/Desktop/mlb-model-transfer-<timestamp>.tar.gz` with the
+source, trained models, DuckDB warehouse, picks log, and the .app bundle.
+The platform-specific `.venv/` and the regeneratable `http_cache.sqlite`
+are excluded by default.
+
+On the destination Mac:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh   # if uv isn't installed
+mkdir -p ~/Projects && cd ~/Projects
+tar -xzf ~/Downloads/mlb-model-transfer-*.tar.gz
+xattr -dr com.apple.quarantine ~/Projects/mlb-model
+cd ~/Projects/mlb-model
+./scripts/build_app_bundle.sh                     # re-sign the .app locally
+open "MLB Forecast.app"                           # first launch: ~30-60s
+```
+
+Both Macs now have identical models, warehouse, and history. The
+packaging script refuses to run while the app is open (prevents copying
+DuckDB mid-transaction).
+
+### Persisted artifacts
+
+Everything stays on your machine:
+
+```
+data/cache/predictions/<YYYY-MM-DD>.parquet   # per-date predictions cache
+data/cache/picks_log.parquet                  # logged picks + graded outcomes
+data/cache/last_morning_sync.txt              # marker for the morning job
+data/cache/last_weekly_train.txt              # marker for the weekly job
+data/journal/predictions.parquet              # append-only model journal (every prediction ever made)
+models/*.joblib                               # trained models + calibrators
+models/archive/<timestamp>/                   # rollback copies (last 5)
+reports/end_of_season_<YEAR>/                 # annual self-evaluation reports
+logs/desktop_launcher.log                     # .app launcher diagnostics
 ```
 
 ## Project layout
@@ -106,14 +364,52 @@ src/mlb_model/
         walkforward.py
         metrics.py       # Brier, log-loss, CLV, ROI by decile
     predict/             # daily prediction pipeline
+    app/                 # FastAPI desktop app (templates + services + pywebview)
+    automation/          # morning-sync, weekly-train, LaunchAgent installer
+    journal/             # append-only prediction log + season grading
+    season/              # season-state detection + end-of-season sweep
 notebooks/               # exploration + backtest reports
 tests/
 data/                    # gitignored — raw + cached pulls live here
+reports/                 # end-of-season reports (gitignored; one folder per year)
+```
+
+## Testing
+
+```bash
+uv run pytest -q          # all 64 tests, ~3 seconds
+uv run pytest -q -k journal  # subset by name
+uv run pytest --cov       # with coverage
+```
+
+The test suite covers feature builders (rolling windows, leakage),
+calibration math, the prediction journal, season state detection,
+the end-of-season sweep, and an end-to-end app smoke test.
+
+## Contributing
+
+Issues and PRs welcome at
+[github.com/ShamgarBN/mlb-bet-engine](https://github.com/ShamgarBN/mlb-bet-engine).
+This is primarily a personal project — I'm a one-person shop — but
+I'm happy to review fixes, new feature builders, additional data
+sources, and improvements to calibration / backtest methodology.
+
+Before opening a PR:
+
+```bash
+uv run pytest
+uv run ruff check src tests
 ```
 
 ## Disclaimer
 
 This is a **probabilistic model**. Even an elite MLB model loses ~45% of its
-picks. Predictions ship with measured confidence intervals. No code in this
-project places real-money bets. Use at your own risk; sports betting can be
-addictive and financially harmful.
+picks. Predictions ship with measured confidence intervals. **No code in this
+project places real-money bets.** Use at your own risk; sports betting can be
+addictive and financially harmful. If you or someone you know has a gambling
+problem, call 1-800-GAMBLER (US) or visit
+[ncpgambling.org](https://www.ncpgambling.org/).
+
+## License
+
+MIT — see [LICENSE](LICENSE).

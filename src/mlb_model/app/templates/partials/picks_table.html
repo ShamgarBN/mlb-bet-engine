@@ -1,0 +1,127 @@
+<div id="picks-region" class="flex flex-col gap-3">
+
+{% if error %}
+  <div class="rounded-lg border border-rose-700/60 bg-rose-900/30 p-5">
+    <div class="flex items-start gap-3">
+      <svg viewBox="0 0 24 24" class="h-5 w-5 mt-0.5 text-rose-300 shrink-0" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      <div>
+        <div class="text-sm font-semibold text-rose-200">Couldn't refresh predictions</div>
+        <div class="text-xs text-rose-300/80 mt-1 font-mono break-all">{{ error }}</div>
+      </div>
+    </div>
+  </div>
+{% endif %}
+
+{% if picks|length == 0 %}
+  <div class="rounded-lg border border-dashed border-chrome-700 bg-chrome-800/40 p-10 text-center">
+    <div class="text-chrome-400 text-sm">No predictions match the current filters.</div>
+    <div class="text-xs text-chrome-500 mt-2">
+      Try widening the tier or clicking <em>Refresh</em> to compute today's slate.
+    </div>
+  </div>
+{% else %}
+
+<div class="grid grid-cols-1 gap-2.5">
+  {% for p in picks %}
+    {% set tier_color = {
+        'premium': ('text-brand-300','bg-brand-600/15','ring-brand-500/40'),
+        'strong':  ('text-brand-300','bg-brand-700/15','ring-brand-700/40'),
+        'edge':    ('text-amber-300','bg-amber-600/15','ring-amber-500/40'),
+        'lean':    ('text-amber-200','bg-amber-700/15','ring-amber-700/40'),
+        'pass':    ('text-chrome-400','bg-chrome-700/40','ring-chrome-600/40'),
+    }[p.tier] %}
+  <a href="/game/{{ p.game_pk }}?date={{ target_date.isoformat() }}"
+     data-pick-card
+     data-search="{{ (p.away_team_abbr ~ ' ' ~ p.home_team_abbr ~ ' ' ~ (p.pick_long or '')) | lower }}"
+     class="group block rounded-xl border border-chrome-700/60 bg-chrome-800/60 hover:border-chrome-600 hover:bg-chrome-800 transition">
+    <div class="px-4 py-3.5 grid grid-cols-12 items-center gap-4">
+      <!-- Matchup -->
+      <div class="col-span-3 flex flex-col">
+        <div class="font-mono text-base font-medium text-white tracking-wider">
+          <span class="text-chrome-400 group-hover:text-white">{{ p.away_team_abbr }}</span>
+          <span class="text-chrome-600 mx-1">@</span>
+          <span class="text-chrome-300 group-hover:text-white">{{ p.home_team_abbr }}</span>
+        </div>
+        <div class="text-[11px] uppercase tracking-wider text-chrome-500 mt-0.5">
+          Predicted score:
+          <span class="text-chrome-300 font-mono">{{ p.pred_away_runs | num(1) }} - {{ p.pred_home_runs | num(1) }}</span>
+        </div>
+      </div>
+
+      <!-- Pick + probabilities -->
+      <div class="col-span-4 flex flex-col">
+        <div class="font-semibold text-white flex items-center gap-2">
+          {{ p.pick_long }}
+          {% if p.market == 'total' and p.total_line_source == 'baseline' %}
+            <span class="text-[10px] uppercase tracking-wider text-amber-300 px-1.5 py-0.5 rounded bg-amber-700/20 ring-1 ring-amber-500/40"
+                  title="No posted closing total — using season league average as the baseline line.">
+              vs. lg avg
+            </span>
+          {% endif %}
+        </div>
+        <div class="flex items-center gap-3 text-xs text-chrome-400 mt-0.5">
+          <span>Model: <span class="text-white font-mono">{{ p.model_prob | pct }}</span></span>
+          <span class="text-chrome-700">·</span>
+          <span>Implied odds: <span class="text-white font-mono">{{ p.model_prob | odds }}</span></span>
+          {% if p.market_prob is not none %}
+            <span class="text-chrome-700">·</span>
+            <span>Market: <span class="text-chrome-300 font-mono">{{ p.market_prob | pct }}</span></span>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Edge -->
+      <div class="col-span-2">
+        {% if p.edge_pp is not none %}
+          <div class="font-mono text-base
+                      {% if p.edge_pp > 3 %}text-brand-400{% elif p.edge_pp > 0 %}text-brand-300{% elif p.edge_pp > -3 %}text-amber-300{% else %}text-rose-400{% endif %}">
+            {{ p.edge_pp | signed_pp }}
+          </div>
+          <div class="text-[10px] uppercase tracking-wider text-chrome-500">vs. market</div>
+        {% else %}
+          <div class="text-chrome-500 text-xs">No market line</div>
+        {% endif %}
+      </div>
+
+      <!-- Confidence -->
+      <div class="col-span-2">
+        <div class="text-xs text-chrome-400 mb-1">
+          Confidence <span class="text-white font-mono">{{ p.confidence | pct(0) }}</span>
+        </div>
+        <div class="h-1.5 w-full overflow-hidden rounded-full bg-chrome-700">
+          <div class="h-full rounded-full {{ 'bg-brand-500' if p.confidence >= 0.5 else 'bg-amber-500' if p.confidence >= 0.3 else 'bg-chrome-500' }}"
+               style="width: {{ (p.confidence * 100) | round(0) }}%"></div>
+        </div>
+      </div>
+
+      <!-- Tier pill + log button -->
+      <div class="col-span-1 flex items-center justify-end gap-1.5">
+        <span class="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded-full ring-1 {{ tier_color[0] }} {{ tier_color[1] }} {{ tier_color[2] }}">
+          {{ p.tier }}
+        </span>
+        <!-- One-click log: prevents the parent <a> navigation, posts
+             this exact pick to /api/picks-log/add. Button flashes
+             green on success or red on failure. -->
+        <button type="button"
+                title="Log this pick to your tracker (My picks page)"
+                data-log-pick
+                data-payload='{"game_pk":{{ p.game_pk }},"game_date":"{{ target_date.isoformat() }}","away_team_abbr":"{{ p.away_team_abbr }}","home_team_abbr":"{{ p.home_team_abbr }}","market":"{{ p.market }}","pick":"{{ p.pick }}","pick_long":"{{ p.pick_long }}","model_prob":{{ p.model_prob }},"market_prob":{{ p.market_prob if p.market_prob is not none else 'null' }},"edge_pp":{{ p.edge_pp if p.edge_pp is not none else 'null' }},"total_line":{{ p.total_line if p.total_line is not none else 'null' }},"tier":"{{ p.tier }}"}'
+                class="rounded-md text-[11px] px-2 py-0.5 ring-1 text-chrome-300 ring-chrome-600/40 bg-chrome-700/40 hover:bg-chrome-700 hover:text-white">
+          Log
+        </button>
+      </div>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+
+<div class="text-xs text-chrome-500 mt-3 text-right">
+  Showing {{ picks|length }} pick{{ '' if picks|length == 1 else 's' }}.
+  Tap a card to see the prediction breakdown.
+</div>
+
+{% endif %}
+
+</div>

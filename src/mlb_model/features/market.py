@@ -112,6 +112,35 @@ def build_market_features(season_start: int, season_end: int) -> pd.DataFrame:
     df["market_ml_home_close_prob"] = devig[0]
     df["market_ml_away_close_prob"] = devig[1]
 
+    # ------------------------------------------------------------------
+    # Runline implied probabilities (de-vigged). The UI uses these to
+    # show "model vs market" edge on runline picks; the features
+    # themselves also help the model when a sharp runline price
+    # disagrees with the moneyline.
+    # ------------------------------------------------------------------
+    df["rl_close_home_implied_raw"] = df["rl_close_home_price"].apply(american_to_implied)
+    df["rl_close_away_implied_raw"] = df["rl_close_away_price"].apply(american_to_implied)
+    rl_devig = df.apply(
+        lambda r: remove_vig(r["rl_close_home_implied_raw"], r["rl_close_away_implied_raw"]),
+        axis=1,
+        result_type="expand",
+    )
+    df["market_rl_home_close_prob"] = rl_devig[0]
+    df["market_rl_away_close_prob"] = rl_devig[1]
+
+    # ------------------------------------------------------------------
+    # Total over/under implied probabilities (de-vigged).
+    # ------------------------------------------------------------------
+    df["ou_close_over_implied_raw"]  = df["total_close_over"].apply(american_to_implied)
+    df["ou_close_under_implied_raw"] = df["total_close_under"].apply(american_to_implied)
+    ou_devig = df.apply(
+        lambda r: remove_vig(r["ou_close_over_implied_raw"], r["ou_close_under_implied_raw"]),
+        axis=1,
+        result_type="expand",
+    )
+    df["market_total_over_close_prob"]  = ou_devig[0]
+    df["market_total_under_close_prob"] = ou_devig[1]
+
     df["market_ml_movement_home"] = df["ml_close_home"].fillna(0) - df["ml_open_home"].fillna(0)
     df["market_rl_home_close_price"] = df["rl_close_home_price"]
     df["market_total_close"] = df["total_close"]
@@ -119,6 +148,8 @@ def build_market_features(season_start: int, season_end: int) -> pd.DataFrame:
     keep = [
         "game_pk", "game_date", "season",
         "market_ml_home_close_prob", "market_ml_away_close_prob",
+        "market_rl_home_close_prob", "market_rl_away_close_prob",
+        "market_total_over_close_prob", "market_total_under_close_prob",
         "market_ml_movement_home", "market_rl_home_close_price",
         "market_total_close",
     ]

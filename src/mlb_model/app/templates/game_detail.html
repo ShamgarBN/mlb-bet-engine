@@ -1,0 +1,274 @@
+{% extends "base.html" %}
+{% block title %}{{ g.away_team_abbr }} @ {{ g.home_team_abbr }}{% endblock %}
+
+{% block content %}
+<section class="flex flex-col gap-6">
+
+  <!-- Header ----------------------------------------------------------- -->
+  <div>
+    <a href="/?date={{ target_date.isoformat() }}" class="text-xs text-chrome-400 hover:text-white inline-flex items-center gap-1">
+      <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+      Back to {{ target_date.strftime('%b %-d') }}
+    </a>
+    <h1 class="mt-2 text-3xl font-semibold text-white tracking-tight">
+      <span class="font-mono">{{ g.away_team_abbr }}</span>
+      <span class="text-chrome-600 mx-2">@</span>
+      <span class="font-mono">{{ g.home_team_abbr }}</span>
+    </h1>
+    <div class="text-sm text-chrome-400 mt-1">{{ g.venue }} · game pk {{ g.game_pk }}</div>
+  </div>
+
+  <!-- Headline cards --------------------------------------------------- -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+    {% set ml_pick = 'HOME' if g.p_home_win >= 0.5 else 'AWAY' %}
+    {% set ml_prob = g.p_home_win if ml_pick == 'HOME' else (1 - g.p_home_win) %}
+    {% set ml_team = g.home_team_abbr if ml_pick == 'HOME' else g.away_team_abbr %}
+    {% set rl_pick = 'HOME' if g.p_home_runline_cover >= 0.5 else 'AWAY' %}
+    {% set rl_prob = g.p_home_runline_cover if rl_pick == 'HOME' else (1 - g.p_home_runline_cover) %}
+    {% set rl_pick_long = (g.home_team_abbr ~ ' -1.5') if rl_pick == 'HOME' else (g.away_team_abbr ~ ' +1.5') %}
+
+    <!-- Moneyline -->
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5">
+      <div class="text-[11px] uppercase tracking-widest text-chrome-500">Moneyline</div>
+      <div class="mt-1.5 flex items-baseline justify-between">
+        <div class="text-2xl font-semibold text-white font-mono">{{ ml_team }}</div>
+        <div class="text-xl font-mono text-brand-300">{{ ml_prob | pct }}</div>
+      </div>
+      <div class="text-xs text-chrome-400 mt-1 flex items-center gap-2">
+        Implied odds <span class="font-mono text-chrome-200">{{ ml_prob | odds }}</span>
+        {% if g.market_ml_home_prob is not none %}
+          {% set mkt_prob = g.market_ml_home_prob if ml_pick == 'HOME' else (1 - g.market_ml_home_prob) %}
+          <span class="text-chrome-700">·</span>
+          Market <span class="font-mono text-chrome-200">{{ mkt_prob | pct }}</span>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Run line -->
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5">
+      <div class="text-[11px] uppercase tracking-widest text-chrome-500">Run line (−1.5)</div>
+      <div class="mt-1.5 flex items-baseline justify-between">
+        <div class="text-2xl font-semibold text-white font-mono">{{ rl_pick_long }}</div>
+        <div class="text-xl font-mono text-brand-300">{{ rl_prob | pct }}</div>
+      </div>
+      <div class="text-xs text-chrome-400 mt-1">Implied odds <span class="font-mono text-chrome-200">{{ rl_prob | odds }}</span></div>
+    </div>
+
+    <!-- Total -->
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5"
+         x-data="{
+            line: {{ g.total_line if g.total_line is not none else (g.pred_home_runs + g.pred_away_runs) | round(1) }},
+            pOver: {{ g.p_total_over if g.p_total_over is not none else 0.5 }},
+            loading: false,
+            async recompute(newLine) {
+              if (!newLine && newLine !== 0) return;
+              this.loading = true;
+              try {
+                const r = await fetch(`/api/totals/probability?game_pk={{ g.game_pk }}&line=${encodeURIComponent(newLine)}&date={{ target_date.isoformat() }}`);
+                if (!r.ok) throw new Error('bad response');
+                const data = await r.json();
+                this.line = data.line;
+                this.pOver = data.p_over;
+              } finally {
+                this.loading = false;
+              }
+            },
+            pct(p) { return (p * 100).toFixed(1) + '%'; },
+            odds(p) {
+              if (p <= 0 || p >= 1) return '—';
+              return p >= 0.5 ? `-${Math.round(p / (1 - p) * 100)}` : `+${Math.round((1 - p) / p * 100)}`;
+            }
+         }">
+      <div class="flex items-center justify-between">
+        <div class="text-[11px] uppercase tracking-widest text-chrome-500">Total</div>
+        {% if g.total_line_source == 'baseline' %}
+          <span class="text-[10px] uppercase tracking-wider text-amber-300 px-1.5 py-0.5 rounded bg-amber-700/20 ring-1 ring-amber-500/40"
+                title="No posted closing total -- baseline is the season league-average.">
+            vs. lg avg
+          </span>
+        {% else %}
+          <span class="text-[10px] uppercase tracking-wider text-brand-300 px-1.5 py-0.5 rounded bg-brand-700/20 ring-1 ring-brand-500/40">
+            market
+          </span>
+        {% endif %}
+      </div>
+      <div class="mt-1.5 flex items-baseline justify-between">
+        <div class="text-2xl font-semibold text-white font-mono">
+          <span x-text="pOver >= 0.5 ? 'OVER' : 'UNDER'"></span>
+          <span x-text="line"></span>
+        </div>
+        <div class="text-xl font-mono text-brand-300" x-text="pct(pOver >= 0.5 ? pOver : 1 - pOver)"></div>
+      </div>
+      <div class="text-xs text-chrome-400 mt-1">
+        Predicted total <span class="font-mono text-chrome-200">{{ (g.pred_home_runs + g.pred_away_runs) | num(1) }}</span>
+        · Implied <span class="font-mono text-chrome-200" x-text="odds(pOver >= 0.5 ? pOver : 1 - pOver)"></span>
+      </div>
+      <div class="mt-3 flex items-center gap-2 text-xs">
+        <label class="text-chrome-400">Try a different line:</label>
+        <input type="number" step="0.5" min="0" max="30"
+               :value="line"
+               @change="recompute($event.target.valueAsNumber)"
+               class="w-20 rounded border border-chrome-700/60 bg-chrome-900/60 px-1.5 py-0.5 text-right font-mono text-chrome-100 [color-scheme:dark]">
+        <span class="text-chrome-500" x-show="loading" x-cloak>computing…</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Predicted runs chart + matchup ----------------------------------- -->
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+    <div class="lg:col-span-2 rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-sm font-semibold text-white">Run distribution</h2>
+        <div class="text-xs text-chrome-500">P(runs = k) from negative-binomial</div>
+      </div>
+      <canvas id="dist-chart" height="220"></canvas>
+    </div>
+
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5 flex flex-col gap-3">
+      <h2 class="text-sm font-semibold text-white">Pitching matchup</h2>
+      <div class="flex items-center justify-between text-sm">
+        <div class="text-chrome-400 font-mono">{{ g.away_team_abbr }}</div>
+        <div class="text-white font-medium">{{ g.away_sp_name or 'TBD' }}</div>
+      </div>
+      <div class="flex items-center justify-between text-sm">
+        <div class="text-chrome-400 font-mono">{{ g.home_team_abbr }}</div>
+        <div class="text-white font-medium">{{ g.home_sp_name or 'TBD' }}</div>
+      </div>
+      <hr class="border-chrome-700/60">
+      <h2 class="text-sm font-semibold text-white">Conditions</h2>
+      <dl class="grid grid-cols-2 gap-y-1 text-sm">
+        <dt class="text-chrome-400">Venue</dt><dd class="text-right text-chrome-200 text-xs">{{ g.venue }}</dd>
+        <dt class="text-chrome-400">Dome</dt><dd class="text-right text-chrome-200">{{ 'Yes' if g.weather.get('is_dome') else 'No' }}</dd>
+        {% if g.weather.get('temp_f') is not none %}
+          <dt class="text-chrome-400">Temp</dt><dd class="text-right text-chrome-200 font-mono">{{ g.weather.temp_f | num(0) }}°F</dd>
+        {% endif %}
+        {% if g.weather.get('wind_speed_mph') is not none %}
+          <dt class="text-chrome-400">Wind</dt><dd class="text-right text-chrome-200 font-mono">{{ g.weather.wind_speed_mph | num(0) }} mph</dd>
+        {% endif %}
+        {% if g.weather.get('humidity_pct') is not none %}
+          <dt class="text-chrome-400">Humidity</dt><dd class="text-right text-chrome-200 font-mono">{{ g.weather.humidity_pct | num(0) }}%</dd>
+        {% endif %}
+      </dl>
+    </div>
+  </div>
+
+  <!-- Feature panel ---------------------------------------------------- -->
+  <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60">
+    <div class="flex items-center justify-between p-5 border-b border-chrome-700/60">
+      <h2 class="text-sm font-semibold text-white">Key driver features</h2>
+      <div class="text-xs text-chrome-500">Leakage-safe rolling stats. Higher is not always better — context matters.</div>
+    </div>
+    {% if g.feature_panel|length == 0 %}
+      <div class="p-10 text-center text-sm text-chrome-500">
+        Feature panel unavailable for this game.
+      </div>
+    {% else %}
+      <table class="w-full text-sm">
+        <thead class="text-[11px] uppercase tracking-wider text-chrome-500 bg-chrome-900/40">
+          <tr>
+            <th class="text-left  font-normal py-2 px-5 w-1/2">Feature</th>
+            <th class="text-right font-normal py-2 px-5">{{ g.away_team_abbr }}</th>
+            <th class="text-right font-normal py-2 px-5">{{ g.home_team_abbr }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% set ns = namespace(last_group="") %}
+          {% for f in g.feature_panel %}
+            {% if f.group != ns.last_group %}
+              {% set ns.last_group = f.group %}
+              <tr class="bg-chrome-900/30">
+                <td colspan="3" class="px-5 py-1.5 text-[11px] uppercase tracking-wider text-chrome-500">{{ f.group }}</td>
+              </tr>
+            {% endif %}
+            <tr class="border-t border-chrome-800">
+              <td class="px-5 py-2 text-chrome-300">{{ f.label }}</td>
+              <td class="px-5 py-2 text-right font-mono text-chrome-200
+                         {% if f.away_raw is not none and f.home_raw is not none and f.away_raw > f.home_raw %}text-brand-300{% endif %}">
+                {{ f.away }}
+              </td>
+              <td class="px-5 py-2 text-right font-mono text-chrome-200
+                         {% if f.away_raw is not none and f.home_raw is not none and f.home_raw > f.away_raw %}text-brand-300{% endif %}">
+                {{ f.home }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+  <!-- Log buttons ------------------------------------------------------ -->
+  <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/40 p-5"
+       x-data="{ saved: '' }">
+    <h2 class="text-sm font-semibold text-white">Log a pick</h2>
+    <p class="text-xs text-chrome-500 mt-1">Saved picks are auto-graded once the box score finalizes.</p>
+    <div class="mt-3 flex flex-wrap gap-2">
+      <template x-for="b in [
+        { market: 'moneyline', pick: '{{ ml_pick }}', long: '{{ ml_team }} ML', prob: {{ ml_prob }} },
+        { market: 'runline',   pick: '{{ rl_pick }}', long: '{{ rl_pick_long }}', prob: {{ rl_prob }} }
+        {% if g.total_line is not none and g.p_total_over is not none %}
+          ,{ market: 'total',  pick: '{{ 'OVER' if g.p_total_over >= 0.5 else 'UNDER' }}', long: '{{ 'OVER' if g.p_total_over >= 0.5 else 'UNDER' }} {{ '%g' % g.total_line }}', prob: {{ g.p_total_over if g.p_total_over >= 0.5 else 1 - g.p_total_over }} }
+        {% endif %}
+      ]">
+        <button
+            type="button"
+            @click="
+              const payload = {
+                game_pk: {{ g.game_pk }},
+                game_date: '{{ g.game_date.isoformat() }}',
+                away_team_abbr: '{{ g.away_team_abbr }}',
+                home_team_abbr: '{{ g.home_team_abbr }}',
+                market: b.market, pick: b.pick, pick_long: b.long,
+                model_prob: b.prob,
+                total_line: {{ g.total_line if g.total_line is not none else 'null' }},
+                tier: ''
+              };
+              fetch('/api/picks-log/add', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)})
+                .then(r => r.ok ? saved = b.long : saved = 'Error');
+            "
+            class="inline-flex items-center gap-2 rounded-md border border-chrome-600 bg-chrome-700/60 hover:bg-chrome-700 px-3 py-1.5 text-sm">
+          <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          <span x-text="'Log ' + b.long"></span>
+        </button>
+      </template>
+    </div>
+    <div class="text-xs text-brand-400 mt-3" x-show="saved" x-cloak>Logged: <span x-text="saved"></span></div>
+  </div>
+
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    fetch('/api/game/{{ g.game_pk }}/distribution?date={{ target_date.isoformat() }}')
+      .then(r => r.json())
+      .then(data => {
+        const ctx = document.getElementById('dist-chart');
+        if (!ctx || !window.Chart) return;
+        new Chart(ctx, {
+          type: 'bar',
+          data: {
+            labels: data.k,
+            datasets: [
+              { label: '{{ g.away_team_abbr }}', data: data.away, backgroundColor: 'rgba(148,163,184,0.55)', borderRadius: 3 },
+              { label: '{{ g.home_team_abbr }}', data: data.home, backgroundColor: 'rgba(34,197,94,0.65)', borderRadius: 3 },
+            ],
+          },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: { labels: { color: '#cbd5e1' } },
+              tooltip: { callbacks: { label: c => `${c.dataset.label}: ${(c.raw * 100).toFixed(1)}%` } },
+            },
+            scales: {
+              x: { ticks: { color: '#94a3b8' }, grid: { color: 'rgba(100,116,139,0.15)' }, title: { display: true, text: 'Runs', color: '#94a3b8' } },
+              y: { ticks: { color: '#94a3b8', callback: v => (v * 100).toFixed(0) + '%' }, grid: { color: 'rgba(100,116,139,0.15)' } },
+            },
+          },
+        });
+      });
+  });
+</script>
+{% endblock %}

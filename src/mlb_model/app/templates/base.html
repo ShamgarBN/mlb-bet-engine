@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-slate-950">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow">
+  <title>{% block title %}MLB Forecast{% endblock %} · MLB Model</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="https://cdn.tailwindcss.com?plugins=forms,typography"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4" defer></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" defer></script>
+  <!-- Date adapter for Chart.js time scales. Without this the /season
+       rolling-accuracy chart (which uses `type: 'time'`) silently fails
+       to render. ``date-fns`` is the lightest officially-supported option. -->
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js" defer></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50:  '#f0fdf4',
+              200: '#bbf7d0',
+              300: '#86efac',
+              400: '#4ade80',
+              500: '#22c55e',
+              600: '#16a34a',
+              700: '#15803d',
+              900: '#14532d',
+            },
+            accent: {
+              400: '#fbbf24',
+              500: '#f59e0b',
+              600: '#d97706',
+            },
+            chrome: {
+              900: '#020617',
+              800: '#0f172a',
+              700: '#1e293b',
+              600: '#334155',
+              500: '#64748b',
+              400: '#94a3b8',
+              200: '#e2e8f0',
+            },
+          },
+          fontFamily: {
+            sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+            mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+</head>
+<body class="min-h-screen bg-chrome-900 text-chrome-200 antialiased font-sans">
+  <header class="border-b border-chrome-700/60 bg-chrome-800/80 backdrop-blur sticky top-0 z-40">
+    <div class="mx-auto max-w-7xl px-6 py-3 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-3 group">
+        <span class="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-brand-600/20 ring-1 ring-brand-500/40 group-hover:ring-brand-400 transition">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 text-brand-400" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M3.5 8.5c5 3 12 3 17 0M3.5 15.5c5-3 12-3 17 0"></path>
+          </svg>
+        </span>
+        <div class="leading-tight">
+          <div class="text-sm font-semibold text-white">MLB Forecast</div>
+          <div class="text-[11px] uppercase tracking-wider text-chrome-500">Daily edge engine</div>
+        </div>
+      </a>
+      <nav class="flex items-center gap-1 text-sm">
+        {% set page = request.url.path %}
+        <a href="/" class="px-3 py-1.5 rounded-md {{ 'bg-chrome-700/70 text-white' if page == '/' else 'text-chrome-400 hover:text-white hover:bg-chrome-700/40' }}">Today</a>
+        <a href="/season" class="px-3 py-1.5 rounded-md {{ 'bg-chrome-700/70 text-white' if page == '/season' else 'text-chrome-400 hover:text-white hover:bg-chrome-700/40' }}">Season</a>
+        <a href="/performance" class="px-3 py-1.5 rounded-md {{ 'bg-chrome-700/70 text-white' if page == '/performance' else 'text-chrome-400 hover:text-white hover:bg-chrome-700/40' }}">Backtest</a>
+        <a href="/log" class="px-3 py-1.5 rounded-md {{ 'bg-chrome-700/70 text-white' if page == '/log' else 'text-chrome-400 hover:text-white hover:bg-chrome-700/40' }}">My picks</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-7xl px-6 py-8">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="mx-auto max-w-7xl px-6 py-6 text-xs text-chrome-500">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-t border-chrome-800 pt-4">
+      <div>Local-only. For informational use; not financial advice.</div>
+      <div class="flex items-center gap-4">
+        {% if automation_status is defined %}
+        {% set sync_state = automation_status.morning_sync_state %}
+        {% set sync_color = {
+            'ok': 'text-brand-300',
+            'yesterday': 'text-amber-300',
+            'stale': 'text-rose-300',
+            'never': 'text-rose-400',
+        }.get(sync_state, 'text-chrome-400') %}
+        <span title="Yesterday's finals + today's slate refresh. Stale means we haven't synced in more than 24h -- click Refresh on the dashboard to force one.">
+          Morning sync:
+          <span class="font-mono {{ sync_color }}">
+            {{ automation_status.morning_sync }}
+            {% if sync_state == 'stale' %}<span class="text-[10px] uppercase ml-1">stale</span>{% endif %}
+          </span>
+        </span>
+        <span title="Weekend model retraining">
+          Last retrain:
+          <span class="font-mono {{ 'text-brand-300' if automation_status.weekly_train != 'never' else 'text-chrome-400' }}">
+            {{ automation_status.weekly_train }}
+          </span>
+        </span>
+        {% endif %}
+        <span>v{{ '1.0.0' }}</span>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Client-side slate search. Defined globally so the dashboard
+       (and any future page with [data-pick-card] elements) can use it
+       without bundling its own JS. Filters by team abbr + pitcher name. -->
+  <script>
+    (function () {
+      function applyFilter(query) {
+        const q = (query || '').trim().toLowerCase();
+        const cards = document.querySelectorAll('[data-pick-card]');
+        cards.forEach((el) => {
+          const blob = el.getAttribute('data-search') || '';
+          el.style.display = (q === '' || blob.includes(q)) ? '' : 'none';
+        });
+      }
+      window.filterPicks = applyFilter;
+
+      // Re-apply the active filter after every HTMX swap so refreshed
+      // tables remember what the user was searching for.
+      document.body.addEventListener('htmx:afterSwap', () => {
+        const input = document.getElementById('slate-search');
+        if (input && input.value) applyFilter(input.value);
+      });
+    })();
+  </script>
+
+  <!-- One-click "Log" handler for pick cards. Delegated so it works on
+       HTMX-swapped DOM too. The button has data-payload with the JSON
+       body for POST /api/picks-log/add. -->
+  <script>
+    (function () {
+      function flash(btn, klass, text) {
+        const original = btn.textContent;
+        btn.classList.add(klass);
+        btn.textContent = text;
+        setTimeout(() => {
+          btn.classList.remove(klass);
+          btn.textContent = original;
+        }, 1800);
+      }
+      document.body.addEventListener('click', async function (event) {
+        const btn = event.target.closest('[data-log-pick]');
+        if (!btn) return;
+        // The button lives inside an <a> card -- prevent navigation.
+        event.preventDefault();
+        event.stopPropagation();
+        let body;
+        try {
+          body = JSON.parse(btn.getAttribute('data-payload') || '{}');
+        } catch (e) {
+          flash(btn, 'ring-rose-500', 'Bad data');
+          return;
+        }
+        try {
+          const r = await fetch('/api/picks-log/add', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          if (!r.ok) throw new Error(await r.text());
+          flash(btn, 'bg-brand-600', 'Logged ✓');
+        } catch (err) {
+          flash(btn, 'bg-rose-700', 'Failed');
+          console.error('log failed', err);
+        }
+      });
+    })();
+  </script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

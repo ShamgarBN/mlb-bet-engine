@@ -1,0 +1,26 @@
+/* Local-only desktop app styles. Tailwind handles the bulk; this file
+   has a few small touches that aren't worth a Tailwind plugin. */
+
+/* Hide content marked x-cloak until Alpine initializes. */
+[x-cloak] { display: none !important; }
+
+/* HTMX indicator: visible only during htmx-request. */
+.htmx-indicator { display: none; }
+.htmx-request .htmx-indicator { display: inline-block; }
+.htmx-request.htmx-indicator { display: inline-block; }
+
+/* Smoother date-picker contrast in dark theme. */
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.7);
+  cursor: pointer;
+}
+
+/* Slight tabular numbers for monospace columns. */
+.font-mono { font-variant-numeric: tabular-nums; }
+
+/* Fade in main content for a hint of polish. */
+main { animation: fade-in 240ms ease-out; }
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}

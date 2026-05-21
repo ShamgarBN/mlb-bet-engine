@@ -247,25 +247,78 @@ def train(
         hm, hs = oof_home.predict_distribution(ph_X)
         am, ase = oof_away.predict_distribution(pa_X)
         tl = pd.to_numeric(rows["market_total_close"], errors="coerce").to_numpy(np.float64)
+
+        # OOF totals classifier. We previously calibrated the O/U
+        # market using the *simulator's* p_over, but at inference time
+        # the production pipeline OVERWRITES that with the direct
+        # LightGBM classifier whenever a market line exists. So the
+        # calibrator was being trained on one distribution of inputs
+        # and applied to a different one -- guaranteed miscalibration.
+        # Train the OOF classifier on the same chronological prior data
+        # and use its predictions to fit the totals calibrator. When
+        # there's no market line we fall back to the sim's p_over
+        # (which is also the inference fallback).
+        oof_totals = None
+        try:
+            tp_tl = pd.to_numeric(tp["market_total_close"], errors="coerce").to_numpy(np.float64)
+            tp_runs = (
+                pd.to_numeric(tp["target_home_score"], errors="coerce")
+                + pd.to_numeric(tp["target_away_score"], errors="coerce")
+            ).to_numpy(np.float64)
+            tp_y_ou = np.where(
+                np.isfinite(tp_tl) & np.isfinite(tp_runs),
+                (tp_runs > tp_tl).astype(np.float64),
+                np.nan,
+            )
+            vp_tl = pd.to_numeric(vp["market_total_close"], errors="coerce").to_numpy(np.float64)
+            vp_runs = (
+                pd.to_numeric(vp["target_home_score"], errors="coerce")
+                + pd.to_numeric(vp["target_away_score"], errors="coerce")
+            ).to_numpy(np.float64)
+            vp_y_ou = np.where(
+                np.isfinite(vp_tl) & np.isfinite(vp_runs),
+                (vp_runs > vp_tl).astype(np.float64),
+                np.nan,
+            )
+            oof_totals = train_totals_model(
+                Xht[mht], tp_y_ou[mht], feat_cols,
+                X_val=Xhv[mhv], y_val=vp_y_ou[mhv],
+            )
+        except (ValueError, Exception) as exc:  # noqa: BLE001
+            log.warning("oof_totals.train.failed", season=int(s), reason=str(exc))
+
         preds = simulate_games(
             game_pks=rows["game_pk"].to_numpy(),
             pred_home=(hm, hs), pred_away=(am, ase),
             total_lines=tl, n_sims=_settings.monte_carlo_iterations,
             seed=_settings.random_seed + int(s),
         )
+        # Direct-classifier p_over on the validation slate (this season).
+        # Used in place of the simulator's p_over whenever the market
+        # line exists -- matching the inference path exactly.
+        if oof_totals is not None:
+            direct_p_over = oof_totals.predict(ph_X)
+        else:
+            direct_p_over = None
+
         runs_actual = (
             pd.to_numeric(rows["target_home_score"], errors="coerce")
             + pd.to_numeric(rows["target_away_score"], errors="coerce")
         ).to_numpy(np.float64)
         for i, p in enumerate(preds):
+            has_market_line = bool(np.isfinite(tl[i]))
+            if has_market_line and direct_p_over is not None:
+                p_ou_for_calibration = float(direct_p_over[i])
+            else:
+                p_ou_for_calibration = float(p.p_total_over)
             oof_rows.append(
                 {
                     "p_ml": p.p_home_win,
                     "y_ml": float(rows["target_home_win"].iloc[i]) if pd.notna(rows["target_home_win"].iloc[i]) else np.nan,
                     "p_rl": p.p_home_runline_cover,
                     "y_rl": float((rows["target_home_score"].iloc[i] - rows["target_away_score"].iloc[i]) > 1.5),
-                    "p_ou": p.p_total_over,
-                    "y_ou": float(runs_actual[i] > tl[i]) if np.isfinite(tl[i]) else np.nan,
+                    "p_ou": p_ou_for_calibration,
+                    "y_ou": float(runs_actual[i] > tl[i]) if has_market_line else np.nan,
                 }
             )
 
@@ -436,6 +489,270 @@ def model_card(
             f"{row['clv_ml']:+.2f}" if pd.notna(row["clv_ml"]) else "n/a",
         )
     console.print(season_table)
+
+
+@app.command("morning-sync")
+def morning_sync_cmd(
+    force: Annotated[bool, typer.Option(help="Run even if already done today")] = False,
+) -> None:
+    """Pull yesterday's finalized scores + today's slate.
+
+    Designed to be safe to run multiple times per day; it short-circuits
+    if the marker file says we already ran. Use ``--force`` to override.
+    """
+    configure_logging()
+    from mlb_model.automation import morning_sync
+
+    if not force and not morning_sync.needs_run():
+        console.print(
+            f"[chrome]Morning sync already ran today "
+            f"(last: {morning_sync.last_run_date()}). Use --force to re-run.[/chrome]"
+        )
+        return
+    counts = morning_sync.run_morning_sync()
+    console.print(counts)
+
+
+@app.command("weekly-train")
+def weekly_train_cmd(
+    force: Annotated[bool, typer.Option(help="Run even if not yet Sunday or already trained")] = False,
+    through_season: Annotated[
+        int | None, typer.Option(help="Train through this season (default: current year)")
+    ] = None,
+) -> None:
+    """Retrain home/away runs models + totals model + calibrators.
+
+    Default policy: only runs on Sundays when the last training was ≥7
+    days ago. Use ``--force`` to retrain right now. If the new model's
+    rolling 14-day moneyline accuracy regresses by more than 2 pp, the
+    previous artefacts are restored automatically.
+    """
+    configure_logging()
+    from mlb_model.automation import weekly_train
+
+    if not force and not weekly_train.needs_run():
+        last = weekly_train.last_run_date()
+        console.print(
+            f"[chrome]Not Sunday yet, or last retrain ({last}) was less than 7 days ago. "
+            f"Use --force to retrain now.[/chrome]"
+        )
+        return
+
+    result = weekly_train.run_weekly_train(through_season=through_season)
+    if not result.get("promoted"):
+        console.print(f"[yellow]New model NOT promoted: {result}[/yellow]")
+    else:
+        console.print(f"[green]New model promoted: {result}[/green]")
+
+
+@app.command("install-schedule")
+def install_schedule_cmd(
+    uninstall: Annotated[bool, typer.Option(help="Remove the LaunchAgents instead of installing them")] = False,
+) -> None:
+    """Install macOS LaunchAgents for morning sync (daily) + weekly retrain.
+
+    Drops two ``.plist`` files in ``~/Library/LaunchAgents`` and loads
+    them with ``launchctl``. The morning sync runs every day at 7:00am;
+    weekly retraining runs Sundays at 3:00am.
+
+    The desktop app also runs these lazily on launch as a backstop, so
+    you can skip the LaunchAgent install if you'd rather not touch
+    ``~/Library``.
+    """
+    configure_logging()
+    from mlb_model.automation.scheduler import install, uninstall as _uninstall
+
+    if uninstall:
+        _uninstall()
+        console.print("[green]LaunchAgents removed.[/green]")
+        return
+    paths = install()
+    for label, path in paths.items():
+        console.print(f"[green]Installed {label}:[/green] {path}")
+
+
+@app.command("app")
+def app_cmd(
+    width: Annotated[int, typer.Option(help="Window width in pixels")] = 1280,
+    height: Annotated[int, typer.Option(help="Window height in pixels")] = 860,
+) -> None:
+    """Launch the MLB Forecast app in a native macOS window.
+
+    This is the "no browser, no terminal" path: an embedded WebKit
+    window backed by a hidden local server. Close the window to exit.
+    """
+    configure_logging()
+    try:
+        from mlb_model.app.desktop import launch_native_window
+    except ImportError as exc:
+        console.print(
+            "[red]pywebview is not installed.[/red] "
+            "Install it with `uv add pywebview` or use `mlb-model serve` instead."
+        )
+        raise typer.Exit(code=1) from exc
+
+    try:
+        launch_native_window(width=width, height=height)
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+
+@app.command("end-of-season")
+def end_of_season_cmd(
+    season: Annotated[int, typer.Option(help="Season to evaluate (e.g. 2026)")],
+    force: Annotated[bool, typer.Option(help="Skip the 'is the regular season over?' check")] = False,
+    skip_backtest: Annotated[
+        bool, typer.Option(help="Skip the slow walk-forward backtest (journal-only report)")
+    ] = False,
+    train_start: Annotated[
+        int | None,
+        typer.Option(help="Earliest training season for the backtest (default: season - 6)"),
+    ] = None,
+) -> None:
+    """Run the end-of-season full sweep: deep self-evaluation + written report.
+
+    Writes ``reports/end_of_season_<SEASON>/`` containing report.md,
+    summary.json, backtest.csv, and a frozen snapshot of the model that
+    produced this season's live predictions. Used both manually after
+    October baseball wraps and automatically by the weekly-train job.
+    """
+    configure_logging()
+    from mlb_model.season import run_end_of_season_sweep
+
+    try:
+        report = run_end_of_season_sweep(
+            season=season, force=force, skip_backtest=skip_backtest,
+            train_start=train_start,
+        )
+    except RuntimeError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(f"[green]End-of-season sweep complete:[/green] {report.output_dir}")
+    console.print(f"  Markdown report: {report.report_md_path}")
+    if report.backtest_csv_path:
+        console.print(f"  Backtest CSV:    {report.backtest_csv_path}")
+    if report.slices_csv_path:
+        console.print(f"  Worst slices:    {report.slices_csv_path}")
+    if report.model_snapshot_dir:
+        console.print(f"  Model snapshot:  {report.model_snapshot_dir}")
+
+
+@app.command("season-status")
+def season_status_cmd() -> None:
+    """Show the current season's state (in-progress / ended / off-season)."""
+    configure_logging()
+    from mlb_model.season import detect_season_state
+
+    status = detect_season_state()
+    table = Table(title=f"{status.season} status", show_header=False)
+    table.add_row("State", status.state)
+    table.add_row("Finalized games", str(status.finalized_games))
+    table.add_row("Description", status.description)
+    console.print(table)
+
+
+@app.command("journal-grade")
+def journal_grade_cmd(
+    season: Annotated[
+        int | None, typer.Option(help="Filter to a single season (default: most recent)")
+    ] = None,
+) -> None:
+    """Grade the prediction journal and print per-market summaries.
+
+    Read-only -- the journal itself is untouched. Useful for spot-checking
+    "how is the model doing this week / season" from the terminal.
+    """
+    configure_logging()
+    from mlb_model.journal import grade_journal, season_summary
+
+    graded = grade_journal(season=season)
+    if graded is None or graded.empty:
+        console.print(
+            "[yellow]No graded predictions yet -- run `mlb-model predict` "
+            "and wait for the games to finalize.[/yellow]"
+        )
+        return
+
+    summaries = season_summary(graded)
+    if not summaries:
+        console.print("[yellow]Journal exists but no finalized outcomes joined.[/yellow]")
+        return
+
+    table = Table(title="Prediction journal summary")
+    table.add_column("Season")
+    table.add_column("Market")
+    table.add_column("N", justify="right")
+    table.add_column("W-L-P", justify="right")
+    table.add_column("Win %", justify="right")
+    table.add_column("Units", justify="right")
+    table.add_column("Brier", justify="right")
+    table.add_column("Log-loss", justify="right")
+    for row in summaries:
+        wr = row.win_rate
+        wr_s = f"{wr*100:.1f}%" if wr is not None and wr == wr else "—"
+        wlp = f"{row.wins}-{row.losses}"
+        if row.pushes:
+            wlp += f"-{row.pushes}"
+        brier_s = f"{row.brier:.3f}" if row.brier == row.brier else "—"
+        ll_s = f"{row.log_loss:.3f}" if row.log_loss == row.log_loss else "—"
+        table.add_row(
+            str(row.season), row.market, str(row.n), wlp, wr_s,
+            f"{row.roi_units:+.2f}", brier_s, ll_s,
+        )
+    console.print(table)
+
+
+@app.command()
+def serve(
+    host: Annotated[str, typer.Option(help="Bind address (local-only by default)")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="HTTP port")] = 8765,
+    open_browser: Annotated[bool, typer.Option(help="Open the app in your default browser")] = True,
+    reload: Annotated[bool, typer.Option(help="Auto-reload on code changes (dev only)")] = False,
+) -> None:
+    """Launch the local desktop forecast app.
+
+    The app binds to 127.0.0.1 only -- it is not reachable from other
+    machines on your network. Stops with Ctrl+C.
+    """
+    configure_logging()
+    import threading
+    import time
+    import webbrowser
+
+    import uvicorn
+
+    # Guard against accidental public exposure.
+    if host not in {"127.0.0.1", "localhost"}:
+        console.print(
+            f"[red]Refusing to bind to {host!r}. The desktop app is local-only.[/red]"
+        )
+        raise typer.Exit(code=2)
+
+    url = f"http://{host}:{port}"
+    console.print(f"[green]MLB Forecast running at[/green] {url}")
+    console.print("Press Ctrl+C to stop.")
+
+    if open_browser:
+        # Open browser a moment after the server starts.
+        def _open() -> None:
+            time.sleep(0.8)
+            try:
+                webbrowser.open(url, new=2)
+            except Exception:  # noqa: BLE001 -- browser may not be available
+                pass
+
+        threading.Thread(target=_open, daemon=True).start()
+
+    uvicorn.run(
+        "mlb_model.app.main:app",
+        host=host,
+        port=port,
+        log_level="info",
+        reload=reload,
+        access_log=False,
+    )
 
 
 def main() -> None:  # entry-point alias for [project.scripts]

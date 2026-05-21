@@ -86,8 +86,45 @@ def _load_bullpen_panel(season_start: int, season_end: int) -> pd.DataFrame:
     return df
 
 
+def _add_workload_features(panel: pd.DataFrame) -> pd.DataFrame:
+    """Per-team rolling-window USAGE features.
+
+    These answer "is this team's bullpen gassed today?" -- a tired pen
+    coming off back-to-back-to-back appearances allows more runs late.
+    Innings already pitched in the recent past is the standard MLB
+    front-office proxy.
+
+    The values for game G are computed from games strictly before G's
+    date (leakage-safe), summed inside a fixed days-window.
+    """
+    if panel.empty:
+        return panel
+    p = panel.sort_values(["team_id", "game_date"]).copy()
+    p["bullpen_ip_yesterday"] = 0.0
+    p["bullpen_ip_last3"]     = 0.0
+    p["bullpen_ip_last7"]     = 0.0
+
+    # Walk each team's chronological game sequence and sum past IP.
+    # Vectorised version would use a date-indexed rolling sum, but the
+    # per-team gameschedules are irregular so an explicit loop is both
+    # simpler and still fast (~30 teams × 162 games = trivial).
+    for team_id, grp in p.groupby("team_id", sort=False):
+        dates = grp["game_date"].to_numpy()
+        ips = grp["bullpen_ip"].astype("float64").fillna(0.0).to_numpy()
+        idx = grp.index
+        for i, d in enumerate(dates):
+            # Sum IP from games strictly before today, inside window.
+            mask_y = (dates < d) & (dates >= d - pd.Timedelta(days=1))
+            mask_3 = (dates < d) & (dates >= d - pd.Timedelta(days=3))
+            mask_7 = (dates < d) & (dates >= d - pd.Timedelta(days=7))
+            p.at[idx[i], "bullpen_ip_yesterday"] = float(ips[mask_y].sum())
+            p.at[idx[i], "bullpen_ip_last3"]     = float(ips[mask_3].sum())
+            p.at[idx[i], "bullpen_ip_last7"]     = float(ips[mask_7].sum())
+    return p
+
+
 def build_bullpen_features(season_start: int, season_end: int) -> pd.DataFrame:
-    """Leakage-safe bullpen-quality rolling features per (team, game)."""
+    """Leakage-safe bullpen-quality + availability rolling features per (team, game)."""
     panel = _load_bullpen_panel(season_start, season_end)
     if panel.empty:
         log.warning("bullpen.empty_panel")
@@ -101,6 +138,11 @@ def build_bullpen_features(season_start: int, season_end: int) -> pd.DataFrame:
     r10 = rolling_per_entity(panel, "team_id", "game_date", value_cols, window_count=10, min_periods=3)
     r30 = rolling_per_entity(panel, "team_id", "game_date", value_cols, window_days=30, min_periods=5)
 
+    # Availability / fatigue (innings used in the last 1/3/7 days).
+    avail = _add_workload_features(panel)[
+        ["team_id", "game_pk", "bullpen_ip_yesterday", "bullpen_ip_last3", "bullpen_ip_last7"]
+    ]
+
     out = pd.concat(
         [
             panel[["team_id", "game_pk"]].reset_index(drop=True),
@@ -109,5 +151,6 @@ def build_bullpen_features(season_start: int, season_end: int) -> pd.DataFrame:
         ],
         axis=1,
     )
-    log.info("bullpen.features.built", rows=len(out))
+    out = out.merge(avail, on=["team_id", "game_pk"], how="left")
+    log.info("bullpen.features.built", rows=len(out), cols=len(out.columns))
     return out

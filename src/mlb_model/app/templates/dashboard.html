@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}{{ target_date.strftime('%a %b %-d') }}{% endblock %}
+
+{% block content %}
+<section class="flex flex-col gap-6">
+
+  <!-- Header strip ----------------------------------------------------- -->
+  <div class="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+    <div>
+      <h1 class="text-3xl font-semibold text-white tracking-tight">
+        {{ target_date.strftime('%A, %B %-d, %Y') }}
+      </h1>
+      <p class="text-sm text-chrome-400 mt-1">
+        {% if has_cache %}
+          Cached predictions — click <span class="text-brand-400">Refresh</span> to pull latest schedules, weather, and odds.
+        {% else %}
+          No cached predictions for this date. Click <span class="text-brand-400">Refresh</span> to compute.
+        {% endif %}
+      </p>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2">
+      <a href="/?date={{ yesterday.isoformat() }}"
+         class="inline-flex items-center gap-1 rounded-md border border-chrome-700/60 bg-chrome-800 px-2.5 py-1.5 text-sm text-chrome-300 hover:bg-chrome-700">
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+        Prev
+      </a>
+      <form method="get" action="/" class="flex items-center gap-2">
+        <input type="date" name="date" value="{{ target_date.isoformat() }}"
+               class="rounded-md border border-chrome-700/60 bg-chrome-800 px-2 py-1.5 text-sm text-chrome-200 [color-scheme:dark]"
+               onchange="this.form.submit()">
+      </form>
+      <a href="/?date={{ tomorrow.isoformat() }}"
+         class="inline-flex items-center gap-1 rounded-md border border-chrome-700/60 bg-chrome-800 px-2.5 py-1.5 text-sm text-chrome-300 hover:bg-chrome-700">
+        Next
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+      </a>
+      <button
+          hx-post="/api/refresh"
+          hx-vals='{"date": "{{ target_date.isoformat() }}", "market": "{{ active_market }}", "tier": "{{ active_tier }}"}'
+          hx-target="#picks-region"
+          hx-swap="outerHTML"
+          hx-indicator="#refresh-indicator"
+          hx-disabled-elt="this"
+          class="inline-flex items-center gap-2 rounded-md bg-brand-600 hover:bg-brand-500 disabled:opacity-60 disabled:cursor-not-allowed px-3 py-1.5 text-sm font-medium text-white shadow ring-1 ring-brand-500/40">
+        <svg id="refresh-indicator" viewBox="0 0 24 24" class="h-4 w-4 htmx-indicator animate-spin" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12a9 9 0 11-3-6.7"/><polyline points="21 4 21 10 15 10"/>
+        </svg>
+        <svg viewBox="0 0 24 24" class="h-4 w-4 [.htmx-request_&]:hidden" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12a9 9 0 11-3-6.7"/><polyline points="21 4 21 10 15 10"/>
+        </svg>
+        Refresh
+      </button>
+      <a href="/api/export/picks?date={{ target_date.isoformat() }}"
+         title="Download today's full slate as CSV"
+         class="inline-flex items-center gap-2 rounded-md bg-chrome-700 hover:bg-chrome-600 px-3 py-1.5 text-sm font-medium text-chrome-100 shadow ring-1 ring-chrome-600/40">
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 3v12"/><polyline points="7 10 12 15 17 10"/><line x1="5" y1="21" x2="19" y2="21"/>
+        </svg>
+        CSV
+      </a>
+    </div>
+  </div>
+
+  {% if error %}
+  <div class="rounded-md border border-rose-700/40 bg-rose-950/40 p-4 text-rose-200">
+    <div class="font-medium">Prediction pipeline error</div>
+    <div class="text-sm mt-1 font-mono">{{ error }}</div>
+  </div>
+  {% endif %}
+
+  <!-- Filter tabs ------------------------------------------------------ -->
+  <div class="flex flex-wrap items-center gap-3 border-b border-chrome-800 pb-3">
+    <div class="text-xs uppercase tracking-wider text-chrome-500 mr-1">Market</div>
+    {% for m in ['moneyline','runline','total'] %}
+      {% set m_label = {'moneyline':'Moneyline','runline':'Run line','total':'Over/Under'}[m] %}
+      <a href="?date={{ target_date.isoformat() }}&market={{ m }}&tier={{ active_tier }}"
+         class="px-3 py-1.5 rounded-md text-sm transition
+                {{ 'bg-brand-600 text-white' if active_market == m
+                    else 'bg-chrome-800 text-chrome-300 hover:bg-chrome-700' }}">{{ m_label }}</a>
+    {% endfor %}
+
+    <div class="text-xs uppercase tracking-wider text-chrome-500 ml-4 mr-1">Tier</div>
+    {% for t in ['all','lean','edge','strong','premium'] %}
+      {% set t_label = {'all':'All','lean':'Lean (≥15%)','edge':'Edge (≥30%)','strong':'Strong (≥50%)','premium':'Premium (≥70%)'}[t] %}
+      <a href="?date={{ target_date.isoformat() }}&market={{ active_market }}&tier={{ t }}"
+         class="px-3 py-1.5 rounded-md text-sm transition
+                {{ 'bg-chrome-700 text-white ring-1 ring-brand-500/40' if active_tier == t
+                    else 'bg-chrome-800 text-chrome-300 hover:bg-chrome-700' }}">{{ t_label }}</a>
+    {% endfor %}
+
+    <!-- Client-side search: filters the current slate by team abbr or
+         starter name without a round-trip to the server. Triggered on
+         every keystroke; clear-with-Esc. -->
+    <div class="ml-auto relative">
+      <input
+        type="text"
+        id="slate-search"
+        placeholder="Search team or pitcher…"
+        oninput="window.filterPicks && window.filterPicks(this.value)"
+        onkeydown="if(event.key==='Escape'){this.value='';window.filterPicks && window.filterPicks('')}"
+        class="w-64 rounded-md border border-chrome-700/60 bg-chrome-800/60 px-3 py-1.5 text-sm text-chrome-100 placeholder-chrome-500 focus:outline-none focus:border-brand-500"
+      />
+      <svg viewBox="0 0 24 24" class="absolute right-2 top-2 h-4 w-4 text-chrome-500 pointer-events-none" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- Picks region ----------------------------------------------------- -->
+  {% include "partials/picks_table.html" %}
+
+</section>
+{% endblock %}

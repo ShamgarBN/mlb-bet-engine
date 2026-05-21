@@ -30,6 +30,7 @@ from mlb_model.features.schedule_context import build_schedule_context
 from mlb_model.features.sp_boxscore import build_sp_boxscore_features
 from mlb_model.features.starting_pitcher import build_sp_features
 from mlb_model.features.team_form import build_team_form_features
+from mlb_model.features.umpire import build_umpire_features
 from mlb_model.logging import get_logger
 
 log = get_logger("features.assemble")
@@ -146,11 +147,12 @@ def _merge_schedule(skeleton: pd.DataFrame, sched: pd.DataFrame) -> pd.DataFrame
 def _merge_park(skeleton: pd.DataFrame, pf: pd.DataFrame) -> pd.DataFrame:
     if pf.empty:
         return skeleton
-    return skeleton.merge(
-        pf[["venue_id", "park_run_factor", "park_hr_factor", "park_k_factor"]],
-        on="venue_id",
-        how="left",
-    )
+    keep = ["venue_id", "park_run_factor", "park_hr_factor", "park_k_factor"]
+    # Handedness-split columns are added by compute_park_factors() when
+    # the upstream probable_pitchers data is rich enough. Keep all of
+    # them so the model can pick up the asymmetry signal.
+    keep += [c for c in pf.columns if c.startswith("park_hand_")]
+    return skeleton.merge(pf[keep], on="venue_id", how="left")
 
 
 def _merge_market(skeleton: pd.DataFrame, mkt: pd.DataFrame) -> pd.DataFrame:
@@ -225,7 +227,10 @@ def build_features_table(season_start: int, season_end: int) -> pd.DataFrame:
     sched = build_schedule_context(season_start, season_end)
     skeleton = _merge_schedule(skeleton, sched)
 
-    # Park factors are computed per *target* season using prior years
+    # Park factors are computed per *target* season using prior years.
+    # ``compute_park_factors`` now also returns handedness-split columns
+    # (park_hand_*_vs_lhp / _vs_rhp) which we want to keep -- they are
+    # joined here automatically via the * select below.
     park_frames = []
     for s in range(season_start, season_end + 1):
         pf = compute_park_factors(s, lookback_seasons=3)
@@ -240,6 +245,13 @@ def build_features_table(season_start: int, season_end: int) -> pd.DataFrame:
             right_on=["venue_id", "season_apply"],
             how="left",
         ).drop(columns=["season_apply", "through_season"], errors="ignore")
+
+    # Career-to-date umpire tendency. The skeleton already has the
+    # ump_name from the umpires table; this adds the leakage-safe
+    # career K/BB/runs-per-game splits keyed on game_pk.
+    ump_feats = build_umpire_features(season_start, season_end)
+    if not ump_feats.empty:
+        skeleton = skeleton.merge(ump_feats, on="game_pk", how="left")
 
     market = build_market_features(season_start, season_end)
     skeleton = _merge_market(skeleton, market)

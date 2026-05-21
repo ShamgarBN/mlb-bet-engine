@@ -50,7 +50,13 @@ class Settings(BaseSettings):
     http_backoff_seconds: float = 2.0
 
     # --- Modeling ---
-    monte_carlo_iterations: int = 50_000
+    # Backtest needs lots of draws to get tight per-game tail estimates
+    # we can compare against historical truth; daily inference doesn't
+    # benefit from more than ~10k draws (the win-probability swings
+    # between 9999 vs 50000 draws is < 0.005 -- well below the rest of
+    # our model's error budget) but takes 5x longer at 50k.
+    monte_carlo_iterations: int = 50_000               # default / backtest
+    monte_carlo_iterations_inference: int = 10_000     # daily slate
     random_seed: int = 42
 
     # --- Confidence tiers used to slice accuracy by edge ---
