@@ -13,6 +13,7 @@ Exposes the project's pipelines:
 from __future__ import annotations
 
 from datetime import date as date_cls, datetime, timedelta
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -88,6 +89,63 @@ def data_pull_range(
             pull_season(season, with_statcast=not no_statcast, with_weather=not no_weather)
         except Exception as exc:  # noqa: BLE001 -- continue across season failures
             log.error("season.failed", season=season, error=str(exc))
+
+
+@data_app.command("ingest-odds")
+def data_ingest_odds(
+    path: Annotated[
+        str,
+        typer.Argument(help="File OR directory. Defaults to ./kaggle-data/"),
+    ] = "kaggle-data",
+) -> None:
+    """Ingest historical/live odds from local files.
+
+    Supports the Kaggle dataset pair (oddsDataMLB.csv + oddsData.csv) and
+    the long-form snapshot dump (mlb_odds_kaggle_states.csv). Anything
+    else under the directory is also tried via the generic CSV ingester.
+    Safe to re-run -- upserts are keyed on (date, home, away, book).
+    """
+    configure_logging()
+    from mlb_model.data.sources.odds_kaggle import ingest_all
+    from mlb_model.data.sources import odds_csv
+
+    target = Path(path)
+    results: dict[str, int] = {}
+
+    if target.is_file():
+        n = odds_csv.ingest_csv(target)
+        results[target.name] = n
+    elif target.is_dir():
+        # Try the Kaggle-specific layouts first, then sweep up anything
+        # else with the generic CSV ingester.
+        results.update(ingest_all(target))
+        # Generic sweep for any odds CSVs not picked up by the Kaggle
+        # ingester (skip files we already touched via the bespoke path).
+        already = {"oddsDataMLB.csv", "oddsData.csv", "mlb_odds_kaggle_states.csv",
+                   "mlb_odds_kaggle_states_summary.csv"}
+        for sub_path in target.rglob("*"):
+            if sub_path.is_dir():
+                continue
+            if sub_path.suffix.lower() not in {".csv", ".tsv", ".xlsx", ".xls"}:
+                continue
+            if sub_path.name in already:
+                continue
+            n = odds_csv.ingest_csv(sub_path)
+            if n > 0:
+                results[f"csv:{sub_path.name}"] = n
+    else:
+        console.print(f"[red]Path not found:[/red] {target}")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"Odds ingest from {target}")
+    table.add_column("source")
+    table.add_column("rows", justify="right")
+    total = 0
+    for k, v in results.items():
+        table.add_row(str(k), f"{v:,}")
+        total += v
+    table.add_row("[bold]TOTAL[/bold]", f"[bold]{total:,}[/bold]")
+    console.print(table)
 
 
 @app.command()
