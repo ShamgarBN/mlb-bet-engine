@@ -52,8 +52,10 @@ htmlcov/
 .ruff_cache/
 
 # --- This project: data is NEVER committed ---
-data/
-!data/.gitkeep
+# Anchored with leading slash so it only matches the top-level data/ directory.
+# Without the slash this rule was silently swallowing src/mlb_model/data/ too.
+/data/
+!/data/.gitkeep
 *.parquet
 *.duckdb
 *.duckdb.wal
