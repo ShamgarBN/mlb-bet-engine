@@ -116,6 +116,12 @@ def ingest_season(season: int) -> int:
     except ImportError:
         log.warning("statcast.pybaseball.missing")
         return 0
+    # Persist every Baseball Savant sub-query to ~/.pybaseball/ so a
+    # crash mid-pull doesn't lose progress and re-runs are fast.
+    try:
+        pybaseball.cache.enable()
+    except Exception:  # noqa: BLE001 -- cache is best-effort
+        log.warning("statcast.cache.enable_failed")
 
     start = date(season, 3, 15).isoformat()
     end = date(season, 11, 15).isoformat()
