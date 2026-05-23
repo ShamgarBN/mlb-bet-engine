@@ -84,24 +84,73 @@ You can fill it in later season-by-season.
 
 ### 4. Bring odds data back
 
-This is the only piece you cannot automate from public APIs. The
-model uses two odds vintages:
+Two complementary sources cover historical and live:
 
-- **2014–2021** — SportsBookReviewsOnline XLSX archive. Drop files
-  named `mlb_odds_2014.xlsx` … `mlb_odds_2021.xlsx` into
-  `data/raw/odds/`, then:
-  ```bash
-  uv run python scripts/backfill_odds.py 2014 2015 2016 2017 2018 2019 2020 2021
-  ```
-- **2022+** — SBR consensus JSON dump. Place the JSON files under
-  `data/raw/odds_scraped/`, then:
-  ```bash
-  uv run python -c "from mlb_model.data.sources.odds_sbr_json import ingest_dataset; ingest_dataset()"
-  ```
+#### Historical (2014–present) via Kaggle CSV
 
-Without odds, the market features will be NaN; the model will still
-train but the run-line and over/under markets won't have closing-line
-context (the moneyline can be calibrated without it).
+The project no longer depends on SportsBookReviewsOnline. Instead, the
+ingester accepts any reasonable CSV/XLSX with one row per game (or
+two rows per game in V/H pair format). Auto-detects common column
+layouts.
+
+Drop a CSV into `data/raw/odds/`, then:
+
+```bash
+uv run python scripts/backfill_odds.py
+```
+
+Where to get the CSV (any of these work — the ingester is forgiving):
+
+* Kaggle, search **"MLB betting odds"** — multiple users have
+  uploaded multi-year archives (e.g. *"MLB Baseball Game Odds &
+  Results 2010–2024"*).
+* Sports Book Review's legacy XLSX format is also supported if you
+  have your own archive of it.
+* OpenSports or similar community archives.
+
+The filename becomes the `book` label, so `mlb_odds_2014.xlsx` lands
+as `book = 'csv_mlb_odds_2014'`. If you want all your CSVs treated
+as the same source, pass `--book consensus_close`:
+
+```bash
+uv run python scripts/backfill_odds.py data/raw/odds/ --book consensus_close
+```
+
+When the auto-detector picks the wrong column, you can override:
+
+```python
+from mlb_model.data.sources.odds_csv import ingest_csv
+ingest_csv(
+    "data/raw/odds/my_weird_format.csv",
+    column_overrides={"date": "GameDay", "home_team": "HomeName"},
+)
+```
+
+#### Live + going forward via The Odds API
+
+For current-day slates and ongoing line tracking, the project ships
+a client for [the-odds-api.com](https://the-odds-api.com/) (free
+tier: 500 requests/month — plenty for one daily call).
+
+1. Sign up, copy your key.
+2. Set `MLB_ODDS_API_KEY` in your environment (or a `.env` file at
+   the project root).
+3. The morning-sync job will pick up live odds automatically once
+   the key is set; or pull on demand:
+   ```bash
+   uv run python -c "from mlb_model.data.sources.odds_api import ingest_live_slate; print(ingest_live_slate())"
+   ```
+
+Live rows land with `book = 'odds_api'`. When both a CSV (historical)
+and an Odds API row exist for the same game, the `features/market.py`
+priority picks `consensus_*` first, then `odds_api`, then everything
+else alphabetically — so the labels you choose for your CSV imports
+matter for tie-breaks.
+
+Without any odds, the market features (`market_ml_*`,
+`market_total_close`, `market_runline_*`) will be NaN and the model
+trains around them. The moneyline can still be calibrated; run-line
+and over/under will be weaker without the closing-line signal.
 
 ### 5. Backtest and train
 

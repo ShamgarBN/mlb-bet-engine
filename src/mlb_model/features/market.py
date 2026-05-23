@@ -58,20 +58,22 @@ def build_market_features(season_start: int, season_end: int) -> pd.DataFrame:
 
     Joins odds_history (date + team_abbr key) to games.
     """
-    # Prefer the newer per-book SBR dataset (book='sbr_consensus'); fall
-    # back to the older xlsx archive (book='sbro_consensus') when no
-    # newer row exists. The window function picks one row per game.
+    # When multiple sources have priced the same game we pick the highest-
+    # priority one. Convention: any book labelled 'consensus_*' is treated
+    # as a curated/de-vigged source and wins; 'odds_api' (live API) comes
+    # next; everything else (CSV imports, etc.) is sorted alphabetically
+    # so the tie-break is deterministic.
     sql = """
         WITH ranked_odds AS (
             SELECT o.*,
-                   CASE WHEN o.book = 'sbr_consensus' THEN 0
-                        WHEN o.book = 'sbro_consensus' THEN 1
-                        ELSE 2 END AS book_priority,
                    ROW_NUMBER() OVER (
                        PARTITION BY o.game_date, o.home_team_abbr, o.away_team_abbr
-                       ORDER BY CASE WHEN o.book = 'sbr_consensus' THEN 0
-                                     WHEN o.book = 'sbro_consensus' THEN 1
-                                     ELSE 2 END
+                       ORDER BY CASE
+                                  WHEN o.book LIKE 'consensus%' THEN 0
+                                  WHEN o.book = 'odds_api'      THEN 1
+                                  ELSE 2
+                                END,
+                                o.book
                    ) AS rn
             FROM odds_history o
         )
