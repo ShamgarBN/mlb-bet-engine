@@ -78,19 +78,98 @@ def _pick_endpoint(when: date, today: date | None = None) -> bool:
     return when < today - timedelta(days=7)
 
 
+# A process-local flag we flip to True once we've seen Open-Meteo time
+# out on the archive endpoint. After that, every subsequent historical
+# request short-circuits to Meteostat without waiting on a doomed TCP
+# handshake. Reset between processes so transient outages don't poison
+# future runs forever.
+_OPEN_METEO_ARCHIVE_DEAD = False
+
+
 def _fetch_hourly(lat: float, lon: float, when: date) -> dict | None:
-    """Fetch a single day's hourly weather. Best-effort: returns None on error."""
+    """Fetch a single day's hourly weather from Open-Meteo.
+
+    Returns None on any error (caller falls back to Meteostat). Short
+    timeout (4s) so a broken endpoint can't dominate a long pull.
+    """
+    global _OPEN_METEO_ARCHIVE_DEAD
     import httpx
 
-    url = _open_meteo_url(lat, lon, when, is_archive=_pick_endpoint(when))
+    is_archive = _pick_endpoint(when)
+    if is_archive and _OPEN_METEO_ARCHIVE_DEAD:
+        return None  # short-circuit; we've already learned the archive is down
+
+    url = _open_meteo_url(lat, lon, when, is_archive=is_archive)
     try:
-        with httpx.Client(timeout=20.0) as client:
+        with httpx.Client(timeout=4.0) as client:
             resp = client.get(url)
             resp.raise_for_status()
             return resp.json()
-    except Exception:  # noqa: BLE001 -- per-game weather is best-effort
-        log.warning("weather.fetch.failed", lat=lat, lon=lon, date=when.isoformat())
+    except httpx.ConnectError:
+        if is_archive:
+            log.warning("weather.open_meteo.archive_unreachable",
+                        suppressing_subsequent=True)
+            _OPEN_METEO_ARCHIVE_DEAD = True
         return None
+    except httpx.TimeoutException:
+        if is_archive:
+            log.warning("weather.open_meteo.archive_timeout",
+                        suppressing_subsequent=True)
+            _OPEN_METEO_ARCHIVE_DEAD = True
+        return None
+    except Exception as exc:  # noqa: BLE001 -- per-game weather is best-effort
+        log.warning("weather.open_meteo.failed",
+                    err=type(exc).__name__, msg=str(exc)[:120])
+        return None
+
+
+def _fetch_hourly_meteostat(
+    lat: float, lon: float, when: date, target_hour: int
+) -> dict[str, float] | None:
+    """Fetch a single hour's weather from Meteostat (nearest station).
+
+    Returns the summary dict in the same shape ``_summarize_at_hour``
+    produces, or None on error. Meteostat ships data in metric units;
+    we convert to °F and mph to match the warehouse contract.
+    """
+    try:
+        from meteostat import Hourly, Point
+    except ImportError:
+        log.warning("weather.meteostat.missing")
+        return None
+    try:
+        start = datetime(when.year, when.month, when.day, 0, 0)
+        end = datetime(when.year, when.month, when.day, 23, 0)
+        df = Hourly(Point(float(lat), float(lon)), start, end).fetch()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("weather.meteostat.failed",
+                    err=type(exc).__name__, msg=str(exc)[:120])
+        return None
+    if df is None or df.empty:
+        return None
+
+    # Pick the row closest to target_hour.
+    df = df.copy()
+    df["_hour"] = df.index.hour
+    df["_dist"] = (df["_hour"] - target_hour).abs()
+    row = df.sort_values("_dist").iloc[0]
+
+    def _val(col, conv=lambda x: x):
+        v = row.get(col)
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return float("nan")
+        try:
+            return conv(float(v))
+        except (TypeError, ValueError):
+            return float("nan")
+
+    return {
+        "temp_f":         _val("temp", lambda c: c * 9.0 / 5.0 + 32.0),
+        "humidity_pct":   _val("rhum"),
+        "pressure_hpa":   _val("pres"),
+        "wind_speed_mph": _val("wspd", lambda kph: kph * 0.621371),
+        "wind_from_deg":  _val("wdir"),
+    }
 
 
 def _summarize_at_hour(payload: dict, target_hour: int) -> dict[str, float]:
@@ -187,14 +266,27 @@ def ingest_weather_for_games(
             rows.append(row)
             continue
 
+        # Try Open-Meteo first; on connection or timeout errors fall back
+        # to Meteostat. Either source produces the same summary shape.
+        target_hour = _scheduled_hour(g.get("scheduled_start"))
+        summary: dict[str, float] | None = None
         payload = _fetch_hourly(
             lat=float(v["latitude"]), lon=float(v["longitude"]), when=when
         )
-        if not payload:
+        if payload:
+            summary = _summarize_at_hour(payload, target_hour)
+        if not summary or all(
+            (val != val) for val in summary.values()  # all-NaN response
+        ):
+            summary = _fetch_hourly_meteostat(
+                lat=float(v["latitude"]), lon=float(v["longitude"]),
+                when=when, target_hour=target_hour,
+            )
+
+        if not summary:
             rows.append(row)
             continue
 
-        summary = _summarize_at_hour(payload, _scheduled_hour(g.get("scheduled_start")))
         row.update({k: summary.get(k, float("nan")) for k in
                     ("temp_f", "humidity_pct", "pressure_hpa", "wind_speed_mph")})
         cf_bearing = float(v.get("cf_bearing_deg", float("nan")))

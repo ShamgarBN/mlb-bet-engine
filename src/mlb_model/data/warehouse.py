@@ -16,7 +16,9 @@ long-lived handle.
 
 from __future__ import annotations
 
+import random
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterable, Iterator
@@ -238,11 +240,52 @@ def _warehouse_path() -> Path:
     return path
 
 
+# DuckDB allows only one writer per process; concurrent processes
+# competing for the file lock get IOException. Retry with capped
+# exponential backoff + jitter so transient contention waits instead
+# of failing the upsert.
+_LOCK_RETRY_ATTEMPTS = 8
+_LOCK_RETRY_BASE_SEC = 0.25
+_LOCK_RETRY_MAX_SEC = 8.0
+
+
+def _is_lock_conflict(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "could not set lock" in msg or "conflicting lock" in msg
+
+
 @contextmanager
 def _connect(read_only: bool = False) -> Iterator[duckdb.DuckDBPyConnection]:
-    """Open a short-lived DuckDB connection. Always closed via context manager."""
+    """Open a short-lived DuckDB connection, retrying on lock conflicts.
+
+    Always closed via context manager.
+    """
     path = _warehouse_path()
-    con = duckdb.connect(str(path), read_only=read_only)
+    last_exc: Exception | None = None
+    for attempt in range(_LOCK_RETRY_ATTEMPTS):
+        try:
+            con = duckdb.connect(str(path), read_only=read_only)
+            break
+        except Exception as exc:  # noqa: BLE001 -- re-raise non-lock errors
+            if not _is_lock_conflict(exc):
+                raise
+            last_exc = exc
+            # Backoff: base * 2^attempt + jitter, capped.
+            sleep_for = min(
+                _LOCK_RETRY_BASE_SEC * (2 ** attempt) + random.uniform(0, 0.1),
+                _LOCK_RETRY_MAX_SEC,
+            )
+            log.warning(
+                "warehouse.lock.retry",
+                attempt=attempt + 1,
+                of=_LOCK_RETRY_ATTEMPTS,
+                sleep_seconds=round(sleep_for, 2),
+            )
+            time.sleep(sleep_for)
+    else:
+        # Exhausted retries.
+        log.error("warehouse.lock.exhausted", attempts=_LOCK_RETRY_ATTEMPTS)
+        raise last_exc  # type: ignore[misc]
     try:
         yield con
     finally:
