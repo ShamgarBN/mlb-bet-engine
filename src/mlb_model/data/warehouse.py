@@ -331,12 +331,16 @@ def upsert_dataframe(
             f"ON CONFLICT DO NOTHING"
         )
 
-    # Convert NaN→None so DuckDB sees SQL NULL rather than the float nan.
-    rows = df.where(df.notna(), None).itertuples(index=False, name=None)
+    # Convert NaN→None so DuckDB sees SQL NULL rather than the float NaN.
+    # ``df.where(df.notna(), None)`` keeps numeric dtypes, so NaNs survive
+    # as floats and DuckDB can't cast them to INT. Cast to object first so
+    # every cell is a Python value and ``None`` is preserved as SQL NULL.
+    clean = df.astype(object).where(df.notna(), None)
+    rows = list(clean.itertuples(index=False, name=None))
     n = 0
     try:
         with _connect() as con:
-            con.executemany(sql, list(rows))
+            con.executemany(sql, rows)
             n = len(df)
     except Exception:
         log.exception("warehouse.upsert.failed", table=table, rows=len(df))

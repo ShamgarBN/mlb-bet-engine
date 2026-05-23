@@ -56,6 +56,7 @@ htmlcov/
 # Without the slash this rule was silently swallowing src/mlb_model/data/ too.
 /data/
 !/data/.gitkeep
+/kaggle-data/
 *.parquet
 *.duckdb
 *.duckdb.wal

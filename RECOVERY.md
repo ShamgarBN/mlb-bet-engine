@@ -86,37 +86,38 @@ You can fill it in later season-by-season.
 
 Two complementary sources cover historical and live:
 
-#### Historical (2014–present) via Kaggle CSV
+#### Historical (2012–2021) via Kaggle CSV
 
-The project no longer depends on SportsBookReviewsOnline. Instead, the
-ingester accepts any reasonable CSV/XLSX with one row per game (or
-two rows per game in V/H pair format). Auto-detects common column
-layouts.
-
-Drop a CSV into `data/raw/odds/`, then:
+Drop your Kaggle MLB-odds archives into `kaggle-data/` at the project
+root and run:
 
 ```bash
-uv run python scripts/backfill_odds.py
+uv run mlb-model data ingest-odds
 ```
 
-Where to get the CSV (any of these work — the ingester is forgiving):
+The ingester recognizes two specific layouts in addition to generic
+CSV/XLSX:
 
-* Kaggle, search **"MLB betting odds"** — multiple users have
-  uploaded multi-year archives (e.g. *"MLB Baseball Game Odds &
-  Results 2010–2024"*).
-* Sports Book Review's legacy XLSX format is also supported if you
-  have your own archive of it.
-* OpenSports or similar community archives.
+* **Kaggle historical pair** (`oddsDataMLB.csv` + `oddsData.csv`) —
+  cross-references the two files to determine home/away, then writes
+  the rich per-game row with `book='kaggle_historical'`.
+* **The Odds API snapshot dump** (`mlb_odds_kaggle_states.csv`) —
+  picks the latest pre-game snapshot per (event, bookmaker, market,
+  outcome) and writes one row per book under
+  `book='kaggle_states_<bookmaker>'`.
 
-The filename becomes the `book` label, so `mlb_odds_2014.xlsx` lands
-as `book = 'csv_mlb_odds_2014'`. If you want all your CSVs treated
-as the same source, pass `--book consensus_close`:
+Any other CSV/XLSX under the directory falls through to the generic
+auto-detector and lands with a `book` label derived from the filename.
+
+To ingest a single file (or use a different directory):
 
 ```bash
-uv run python scripts/backfill_odds.py data/raw/odds/ --book consensus_close
+uv run mlb-model data ingest-odds path/to/file.csv
+uv run mlb-model data ingest-odds path/to/dir/
 ```
 
-When the auto-detector picks the wrong column, you can override:
+When the generic auto-detector picks the wrong column, you can pass
+overrides programmatically:
 
 ```python
 from mlb_model.data.sources.odds_csv import ingest_csv
@@ -125,6 +126,10 @@ ingest_csv(
     column_overrides={"date": "GameDay", "home_team": "HomeName"},
 )
 ```
+
+**Coverage gap (2022–2025):** the historical pair stops at 2021-10-03.
+For the four-season gap, use The Odds API's paid historical tier (or
+any other archive you can find) and ingest with the same command.
 
 #### Live + going forward via The Odds API
 
