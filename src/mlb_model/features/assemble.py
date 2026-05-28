@@ -37,8 +37,25 @@ log = get_logger("features.assemble")
 
 
 def _games_skeleton(season_start: int, season_end: int) -> pd.DataFrame:
-    """Per-game spine: one row per game with target labels."""
+    """Per-game spine: one row per game with target labels.
+
+    MLB's Stats API occasionally lists multiple probable pitchers for the
+    same side of a game when the rotation is in flux (e.g. STL @ MIL on
+    2026-05-25 had two listed away SPs). A naive LEFT JOIN on
+    ``probable_pitchers`` fans the game out into N rows; we dedupe to
+    exactly one row per (game_pk, is_home) by lowest ``pitcher_id``
+    inside a ``ROW_NUMBER()`` CTE before joining.
+    """
     sql = """
+        WITH ranked_pp AS (
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY game_pk, is_home ORDER BY pitcher_id
+            ) AS rn
+            FROM probable_pitchers
+        ),
+        pp_one AS (
+            SELECT * FROM ranked_pp WHERE rn = 1
+        )
         SELECT
             g.game_pk,
             g.game_date,
@@ -62,9 +79,9 @@ def _games_skeleton(season_start: int, season_end: int) -> pd.DataFrame:
             w.wind_speed_mph, w.wind_out_to_cf,
             w.is_dome, u.ump_name
         FROM games g
-        LEFT JOIN probable_pitchers pp_home
+        LEFT JOIN pp_one pp_home
                ON pp_home.game_pk = g.game_pk AND pp_home.is_home = TRUE
-        LEFT JOIN probable_pitchers pp_away
+        LEFT JOIN pp_one pp_away
                ON pp_away.game_pk = g.game_pk AND pp_away.is_home = FALSE
         LEFT JOIN weather w ON w.game_pk = g.game_pk
         LEFT JOIN umpires u ON u.game_pk = g.game_pk

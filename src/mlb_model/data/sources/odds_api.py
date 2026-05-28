@@ -26,6 +26,7 @@ from datetime import date, datetime, UTC
 import httpx
 import pandas as pd
 
+from mlb_model.config import settings
 from mlb_model.data.warehouse import upsert_dataframe
 from mlb_model.logging import get_logger
 
@@ -37,7 +38,10 @@ _DEFAULT_BOOKS = "draftkings,fanduel,betmgm,caesars,pinnacle"
 
 
 def _api_key() -> str | None:
-    return os.environ.get("MLB_ODDS_API_KEY")
+    """Read the API key from settings (which loads PROJECT_ROOT/.env) and
+    fall back to the raw env var so an exported shell variable still works.
+    """
+    return settings.odds_api_key or os.environ.get("MLB_ODDS_API_KEY")
 
 
 def _short_team(name: str) -> str | None:

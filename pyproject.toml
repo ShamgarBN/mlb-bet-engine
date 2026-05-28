@@ -64,6 +64,9 @@ dev = [
     "ipykernel>=6.29",
     "ipywidgets>=8.1",
 ]
+package = [
+    "pyinstaller>=6.10",
+]
 
 [project.scripts]
 mlb-model = "mlb_model.cli:app"

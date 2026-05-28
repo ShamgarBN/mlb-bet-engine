@@ -189,6 +189,22 @@ def train(
         console.print("[red]No training data available -- run `data pull` first.[/red]")
         raise typer.Exit(code=1)
 
+    # Drop phantom rows: unplayed games (Scheduled / In Progress / Postponed /
+    # Cancelled) have placeholder 0-0 scores in the warehouse, not NULL, so
+    # the dropna above doesn't filter them. Restrict training to completed
+    # games via the ``games.status`` column.
+    from mlb_model.data.warehouse import query as _wh_query
+
+    _final_pks = _wh_query(
+        "SELECT game_pk FROM games WHERE status = 'Final'"
+    )
+    if not _final_pks.empty:
+        before = len(features)
+        features = features[features["game_pk"].isin(_final_pks["game_pk"])]
+        console.print(
+            f"[dim]Filtered to status=Final: {before:,} → {len(features):,} rows[/dim]"
+        )
+
     spec = fit_spec(features)
     feat_path = _settings.model_dir / "feature_spec.joblib"
     _settings.model_dir.mkdir(parents=True, exist_ok=True)
@@ -278,6 +294,19 @@ def train(
         if prior.empty or this_season.empty:
             continue
         sub_spec = fit_spec(prior)
+        # Build the prior-window training matrix FIRST, then lock the
+        # encoded column list so every later matrix (validation tail and
+        # this_season) is forced to the same shape. Without this, a
+        # partial season with fewer categorical values produces a
+        # narrower one-hot encoding and LightGBM fails at predict time.
+        prior_sorted = prior.sort_values("game_date").reset_index(drop=True)
+        vc = int(len(prior_sorted) * 0.85)
+        tp, vp = prior_sorted.iloc[:vc], prior_sorted.iloc[vc:]
+        Xht, mht, oof_feat_cols = build_runs_matrix(tp, sub_spec)
+        sub_spec.final_feature_cols = oof_feat_cols
+        Xat, mat, _ = build_runs_matrix_away(tp, sub_spec)
+        Xhv, mhv, _ = build_runs_matrix(vp, sub_spec)
+        Xav, mav, _ = build_runs_matrix_away(vp, sub_spec)
         Xh, mh, _ = build_runs_matrix(this_season, sub_spec)
         Xa, ma, _ = build_runs_matrix_away(this_season, sub_spec)
         valid = mh & ma
@@ -285,15 +314,6 @@ def train(
             continue
         rows = this_season.loc[valid].reset_index(drop=True)
         ph_X, pa_X = Xh[valid], Xa[valid]
-
-        # Fit smaller-window models per season for OOF (chronological 85/15 tail)
-        prior_sorted = prior.sort_values("game_date").reset_index(drop=True)
-        vc = int(len(prior_sorted) * 0.85)
-        tp, vp = prior_sorted.iloc[:vc], prior_sorted.iloc[vc:]
-        Xht, mht, _ = build_runs_matrix(tp, sub_spec)
-        Xat, mat, _ = build_runs_matrix_away(tp, sub_spec)
-        Xhv, mhv, _ = build_runs_matrix(vp, sub_spec)
-        Xav, mav, _ = build_runs_matrix_away(vp, sub_spec)
         oof_home = train_runs_model(
             Xht[mht], tp["target_home_score"].to_numpy()[mht], feat_cols,
             eval_X=Xhv[mhv], eval_y=vp["target_home_score"].to_numpy()[mhv],

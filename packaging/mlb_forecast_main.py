@@ -1,0 +1,141 @@
+"""PyInstaller entry point for the standalone MLB Forecast.app.
+
+This is the single Python script PyInstaller bundles into a macOS .app.
+It boots the local FastAPI server in a daemon thread and opens a native
+WebKit window pointed at it -- the same machinery as ``mlb-model app``,
+but called directly without going through the Typer CLI (so the bundled
+binary has nothing to do with command-line argv parsing).
+
+Project-relative paths (templates, static, models, warehouse) work
+because we put the whole ``src/mlb_model`` tree + a snapshot of
+``data/warehouse.duckdb`` + ``models/`` + ``data/raw/`` into the .app's
+Resources via the .spec file. ``Settings.project_root`` resolves to a
+writable location under ``~/Library/Application Support/MLB Forecast/``
+at first launch; see :func:`_prepare_app_support_root` below.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+from pathlib import Path
+
+
+APP_NAME = "MLB Forecast"
+SUPPORT_SUBDIR = "MLB Forecast"
+
+
+def _bundle_root() -> Path:
+    """Path to the read-only resources baked into the .app.
+
+    When frozen by PyInstaller, ``sys._MEIPASS`` is the directory where
+    the bundle extracted its data files. When running unfrozen (i.e.
+    ``python packaging/mlb_forecast_main.py``), fall back to the project
+    root so developers can sanity-check this script.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS)  # type: ignore[attr-defined]
+    return Path(__file__).resolve().parent.parent
+
+
+def _app_support_root() -> Path:
+    """User-writable home for the runtime warehouse + models + logs."""
+    base = Path.home() / "Library" / "Application Support" / SUPPORT_SUBDIR
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _prepare_app_support_root() -> Path:
+    """On first launch copy the bundled warehouse + models into the
+    user's Application Support folder so subsequent runs can write to
+    them. Idempotent: skips already-installed files.
+    """
+    bundle = _bundle_root()
+    support = _app_support_root()
+
+    # ``warehouse.duckdb`` is the largest payload (~hundreds of MB). We
+    # only copy it on first launch.
+    src_warehouse = bundle / "data" / "warehouse.duckdb"
+    dst_warehouse = support / "data" / "warehouse.duckdb"
+    if src_warehouse.exists() and not dst_warehouse.exists():
+        dst_warehouse.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_warehouse, dst_warehouse)
+
+    # Trained models -- small (~1 MB), but the user can retrain in place
+    # so we mirror them at first launch and then leave them alone.
+    src_models = bundle / "models"
+    dst_models = support / "models"
+    if src_models.exists() and not dst_models.exists():
+        shutil.copytree(src_models, dst_models)
+
+    # Pre-built raw odds dataset (for re-ingest on retrain). Optional;
+    # the app works without it.
+    src_raw = bundle / "data" / "raw"
+    dst_raw = support / "data" / "raw"
+    if src_raw.exists() and not dst_raw.exists():
+        shutil.copytree(src_raw, dst_raw)
+
+    return support
+
+
+def _load_env_file(support_root: Path) -> None:
+    """Load ``<support_root>/.env`` into ``os.environ`` BEFORE mlb_model
+    imports.
+
+    Why this is necessary: pydantic-settings binds its ``env_file`` to a
+    path computed from ``config.py``'s module location at import time. In
+    a PyInstaller bundle that resolves to a frozen path inside the .app,
+    NOT the user-writable support root, so a key the user saved via the
+    Settings page would never be re-read on the next launch. We sidestep
+    that entirely by parsing the .env ourselves and seeding os.environ,
+    which both pydantic and ``odds_api._api_key()`` honor.
+    """
+    env_path = support_root / ".env"
+    if not env_path.exists():
+        return
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip().strip('"').strip("'")
+            # Don't clobber a variable explicitly exported in the shell.
+            os.environ.setdefault(key, value)
+    except OSError:
+        pass
+
+
+def _wire_settings(support_root: Path) -> None:
+    """Point :data:`mlb_model.config.settings` at the writable support
+    root. The package reads ``MLB_*`` env vars before its Settings class
+    instantiates, so we set them here BEFORE importing anything from
+    ``mlb_model``.
+    """
+    os.environ.setdefault("MLB_PROJECT_ROOT", str(support_root))
+    os.environ.setdefault("MLB_DATA_DIR", str(support_root / "data"))
+    os.environ.setdefault("MLB_RAW_DIR", str(support_root / "data" / "raw"))
+    os.environ.setdefault("MLB_INTERIM_DIR", str(support_root / "data" / "interim"))
+    os.environ.setdefault("MLB_PROCESSED_DIR", str(support_root / "data" / "processed"))
+    os.environ.setdefault("MLB_CACHE_DIR", str(support_root / "data" / "cache"))
+    os.environ.setdefault("MLB_WAREHOUSE_PATH", str(support_root / "data" / "warehouse.duckdb"))
+    os.environ.setdefault("MLB_MODEL_DIR", str(support_root / "models"))
+    os.environ.setdefault("MLB_LOGS_DIR", str(support_root / "logs"))
+
+
+def main() -> None:
+    support_root = _prepare_app_support_root()
+    _load_env_file(support_root)
+    _wire_settings(support_root)
+
+    # Import after env vars are set so Settings picks them up.
+    from mlb_model.app.desktop import launch_native_window
+    from mlb_model.logging import configure_logging
+
+    configure_logging()
+    launch_native_window()
+
+
+if __name__ == "__main__":
+    main()

@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     http_max_retries: int = 4
     http_backoff_seconds: float = 2.0
 
+    # --- External API keys (loaded from .env via MLB_ prefix) ---
+    # The Odds API (the-odds-api.com) — free-tier signup gives 500
+    # credits/month which is plenty for one live-slate pull per day
+    # (~3 credits / call). Without a key, live odds ingest no-ops and
+    # the predict pipeline falls back to a league-average baseline
+    # total line.
+    odds_api_key: str | None = None
+
     # --- Modeling ---
     # Backtest needs lots of draws to get tight per-game tail estimates
     # we can compare against historical truth; daily inference doesn't
