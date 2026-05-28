@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+<section class="max-w-2xl mx-auto space-y-6">
+  <div>
+    <h1 class="text-2xl font-semibold text-white">Settings</h1>
+    <p class="text-sm text-chrome-400 mt-1">
+      One-time configuration for live odds. Stored locally on this machine only.
+    </p>
+  </div>
+
+  <!-- The Odds API key card -->
+  <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5">
+    <div class="flex items-start gap-3 mb-3">
+      <div class="h-9 w-9 shrink-0 rounded-full bg-brand-600/20 flex items-center justify-center">
+        <svg viewBox="0 0 24 24" class="h-5 w-5 text-brand-400" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="11" width="18" height="11" rx="2"/>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+      </div>
+      <div class="flex-1 min-w-0">
+        <h2 class="text-sm font-semibold text-white">The Odds API key</h2>
+        <p class="text-xs text-chrome-400 mt-0.5">
+          Without a key the app falls back to a league-average baseline total. With a key,
+          each game shows its real moneyline / runline / over-under from
+          <a href="https://the-odds-api.com" target="_blank" class="underline decoration-chrome-700 hover:text-chrome-200">the-odds-api.com</a>
+          (free tier: 500 credits/month — about 5 credits per refresh).
+        </p>
+
+        <!-- Current state -->
+        <div class="mt-3 text-xs text-chrome-300 font-mono">
+          Current:
+          {% if current_key_masked %}
+            <span class="text-brand-300">{{ current_key_masked }}</span>
+            <span class="text-chrome-500">(loaded from {{ key_source }})</span>
+          {% else %}
+            <span class="text-chrome-500">not set</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Form -->
+    <form id="odds-key-form" class="space-y-3 mt-4">
+      <label class="block">
+        <span class="text-xs text-chrome-400 uppercase tracking-wider">API key</span>
+        <input id="odds-key-input"
+               name="api_key"
+               type="text"
+               autocomplete="off"
+               spellcheck="false"
+               placeholder="paste your 32-char hexadecimal key"
+               class="mt-1 block w-full rounded-md border border-chrome-700/60 bg-chrome-900 text-chrome-100 font-mono text-sm px-3 py-2 placeholder:text-chrome-600 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+      </label>
+      <div class="flex flex-wrap items-center gap-2">
+        <button id="test-btn" type="button"
+                class="text-xs rounded-md border border-chrome-700 bg-chrome-700/40 hover:bg-chrome-700 text-chrome-200 px-3 py-1.5">
+          Test key
+        </button>
+        <button id="save-btn" type="button"
+                class="text-xs rounded-md border border-brand-700/60 bg-brand-700/30 hover:bg-brand-700/50 text-brand-100 px-3 py-1.5">
+          Save
+        </button>
+        {% if current_key_masked %}
+        <button id="clear-btn" type="button"
+                class="text-xs rounded-md border border-rose-800/60 bg-rose-900/30 hover:bg-rose-900/50 text-rose-200 px-3 py-1.5">
+          Remove key
+        </button>
+        {% endif %}
+      </div>
+    </form>
+
+    <!-- Status / validation banner -->
+    <div id="status-banner" class="hidden mt-4 rounded-md border p-3 text-xs"></div>
+  </div>
+
+  <!-- Where things live (for transparency) -->
+  <div class="rounded-xl border border-chrome-800 bg-chrome-800/30 p-4 text-xs text-chrome-400">
+    <div class="font-semibold text-chrome-300 mb-1">Where things are stored</div>
+    <dl class="space-y-1 font-mono">
+      <div><span class="text-chrome-500">env file:</span> {{ env_path }}</div>
+      <div><span class="text-chrome-500">warehouse:</span> {{ warehouse_path }}</div>
+      <div><span class="text-chrome-500">models:</span> {{ model_dir }}</div>
+    </dl>
+  </div>
+</section>
+
+<script>
+  (function () {
+    const input = document.getElementById("odds-key-input");
+    const banner = document.getElementById("status-banner");
+    const saveBtn = document.getElementById("save-btn");
+    const testBtn = document.getElementById("test-btn");
+    const clearBtn = document.getElementById("clear-btn");
+
+    function show(kind, html) {
+      const palette = {
+        ok:   "border-brand-700/60 bg-brand-900/30 text-brand-200",
+        warn: "border-amber-700/60 bg-amber-900/30 text-amber-200",
+        err:  "border-rose-800/60 bg-rose-900/40 text-rose-200",
+        info: "border-chrome-700/60 bg-chrome-800/60 text-chrome-200",
+      };
+      banner.className = "mt-4 rounded-md border p-3 text-xs " + (palette[kind] || palette.info);
+      banner.innerHTML = html;
+      banner.classList.remove("hidden");
+    }
+
+    async function post(url, body) {
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}),
+      });
+      return { ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) };
+    }
+
+    testBtn.addEventListener("click", async function () {
+      const key = (input.value || "").trim();
+      if (!key) { show("warn", "Paste a key first, then click Test."); return; }
+      show("info", "Calling The Odds API…");
+      const r = await post("/api/settings/odds-key/test", { api_key: key });
+      if (r.ok && r.body.ok) {
+        show("ok",
+          "✓ Key is valid. " +
+          (r.body.requests_remaining != null
+            ? "Remaining credits this month: <strong>" + r.body.requests_remaining + "</strong>"
+            : "")
+        );
+      } else {
+        show("err", "✗ " + (r.body.error || ("HTTP " + r.status)));
+      }
+    });
+
+    saveBtn.addEventListener("click", async function () {
+      const key = (input.value || "").trim();
+      if (!key) { show("warn", "Paste a key first, then click Save."); return; }
+      show("info", "Saving…");
+      const r = await post("/api/settings/odds-key", { api_key: key });
+      if (r.ok && r.body.ok) {
+        show("ok", "Saved. Click <em>Refresh</em> on the Today page to pull live lines for today's slate.");
+        input.value = "";
+        setTimeout(() => location.reload(), 1200);
+      } else {
+        show("err", r.body.error || ("HTTP " + r.status));
+      }
+    });
+
+    if (clearBtn) {
+      clearBtn.addEventListener("click", async function () {
+        if (!confirm("Remove the saved API key? The app will fall back to the league-average baseline for totals.")) return;
+        const r = await post("/api/settings/odds-key", { api_key: "" });
+        if (r.ok) {
+          show("ok", "Key removed.");
+          setTimeout(() => location.reload(), 800);
+        } else {
+          show("err", "Could not remove key.");
+        }
+      });
+    }
+  })();
+</script>
+{% endblock %}

@@ -53,8 +53,126 @@
         Export CSV
       </a>
       {% endif %}
+      <button id="retrain-btn"
+              type="button"
+              title="Pull all current-season data, refit the model, and validate against the past 14 days. Runs in the background (~10 min)."
+              class="text-xs rounded-md border border-brand-700/60 bg-brand-700/30 hover:bg-brand-700/50 text-brand-100 px-3 py-1.5 inline-flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+        <svg id="retrain-icon" viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="23 4 23 10 17 10"/>
+          <polyline points="1 20 1 14 7 14"/>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+        </svg>
+        <span id="retrain-label">Retrain &amp; analyze</span>
+      </button>
     </div>
   </div>
+
+  <!-- Retrain status banner (hidden by default; populated by JS) -->
+  <div id="retrain-banner" class="hidden rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-4 flex items-start gap-3">
+    <div id="retrain-spinner" class="h-5 w-5 mt-0.5 shrink-0 animate-spin rounded-full border-2 border-brand-400 border-t-transparent hidden"></div>
+    <svg id="retrain-check" viewBox="0 0 24 24" class="h-5 w-5 mt-0.5 shrink-0 text-brand-300 hidden" fill="none" stroke="currentColor" stroke-width="2">
+      <polyline points="20 6 9 17 4 12"/>
+    </svg>
+    <svg id="retrain-warn" viewBox="0 0 24 24" class="h-5 w-5 mt-0.5 shrink-0 text-amber-300 hidden" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+      <line x1="12" y1="9" x2="12" y2="13"/>
+      <line x1="12" y1="17" x2="12.01" y2="17"/>
+    </svg>
+    <div class="flex-1 min-w-0">
+      <div id="retrain-title" class="text-sm font-semibold text-white"></div>
+      <div id="retrain-detail" class="text-xs text-chrome-400 mt-1"></div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const btn = document.getElementById("retrain-btn");
+      const label = document.getElementById("retrain-label");
+      const banner = document.getElementById("retrain-banner");
+      const spin = document.getElementById("retrain-spinner");
+      const check = document.getElementById("retrain-check");
+      const warn = document.getElementById("retrain-warn");
+      const title = document.getElementById("retrain-title");
+      const detail = document.getElementById("retrain-detail");
+      let pollTimer = null;
+
+      function show(state, t, d) {
+        banner.classList.remove("hidden");
+        spin.classList.toggle("hidden", state !== "running");
+        check.classList.toggle("hidden", state !== "ok");
+        warn.classList.toggle("hidden", state !== "warn");
+        title.textContent = t;
+        detail.textContent = d || "";
+      }
+
+      function setBusy(busy) {
+        btn.disabled = busy;
+        label.textContent = busy ? "Retraining…" : "Retrain & analyze";
+      }
+
+      function pct(x) {
+        return x == null ? "—" : (x * 100).toFixed(1) + "%";
+      }
+
+      async function refreshStatus() {
+        try {
+          const r = await fetch("/api/season/retrain/status");
+          const s = await r.json();
+          if (s.running) {
+            setBusy(true);
+            show("running", "Retraining in progress…",
+              "Pulling new finals, refitting the model, and validating against the last 14 days. " +
+              "This usually takes about 10 minutes. You can leave this page open.");
+            if (!pollTimer) pollTimer = setInterval(refreshStatus, 8000);
+            return;
+          }
+          setBusy(false);
+          if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+          if (s.last_result && s.last_result.ok === false) {
+            show("warn", "Last retrain failed", s.last_result.error || "See logs/ for details.");
+          } else if (s.last_result && s.last_result.result) {
+            const r = s.last_result.result;
+            if (r.promoted) {
+              show("ok",
+                "New model promoted",
+                "Baseline ML acc: " + pct(r.baseline_ml_acc) +
+                "  •  New: " + pct(r.new_ml_acc) +
+                "  •  Archive: " + (r.archive || "—"));
+            } else {
+              show("warn",
+                "New model NOT promoted (rolled back)",
+                "Baseline: " + pct(r.baseline_ml_acc) +
+                "  •  New: " + pct(r.new_ml_acc) +
+                "  •  Reason: " + (r.reason || "regression"));
+            }
+          }
+        } catch (e) {
+          /* network blip — leave UI as-is */
+        }
+      }
+
+      btn.addEventListener("click", async function () {
+        setBusy(true);
+        show("running", "Starting retrain…", "");
+        try {
+          const r = await fetch("/api/season/retrain", { method: "POST" });
+          if (r.status === 409) {
+            show("warn", "Already running", "A retrain is already in flight; polling for status.");
+          }
+        } catch (e) {
+          setBusy(false);
+          show("warn", "Could not start retrain", String(e));
+          return;
+        }
+        if (!pollTimer) pollTimer = setInterval(refreshStatus, 8000);
+        refreshStatus();
+      });
+
+      // On page load, sync state in case a retrain is already running
+      // from another tab / the Sunday auto-trigger.
+      refreshStatus();
+    })();
+  </script>
 
   {% if eos_report %}
     <!-- End-of-season report banner -->
@@ -159,8 +277,22 @@
       {% endfor %}
     </div>
 
-    <!-- Rolling accuracy + calibration -->
-    <div class="grid gap-4 lg:grid-cols-2">
+    <!-- Rolling accuracy + calibration.
+         Charts need a minimum amount of graded history to be meaningful:
+         a rolling line needs >=2 daily points, calibration needs >=2 bins.
+         Early in the season we don't have that yet, so we collapse the
+         card to a compact note instead of reserving an empty 256px canvas. -->
+    {% set ns = namespace(max_rolling=0) %}
+    {% for _m, _rows in rolling.items() %}
+      {% if (_rows | length) > ns.max_rolling %}{% set ns.max_rolling = _rows | length %}{% endif %}
+    {% endfor %}
+    {% set has_rolling = ns.max_rolling >= 2 %}
+    {% set cal_ml = calibration.get('moneyline', []) %}
+    {% set has_calibration = (cal_ml | length) >= 2 %}
+
+    {% if has_rolling or has_calibration %}
+    <div class="grid gap-4 {{ 'lg:grid-cols-2' if (has_rolling and has_calibration) else 'grid-cols-1' }}">
+      {% if has_rolling %}
       <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5">
         <div class="flex items-center justify-between mb-3">
           <h2 class="text-sm font-semibold text-white uppercase tracking-widest">Rolling 30-day accuracy</h2>
@@ -172,7 +304,9 @@
           A flat line near 0.55 is the realistic ceiling for moneyline on raw public data.
         </p>
       </div>
+      {% endif %}
 
+      {% if has_calibration %}
       <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5">
         <div class="flex items-center justify-between mb-3">
           <h2 class="text-sm font-semibold text-white uppercase tracking-widest">Calibration</h2>
@@ -185,7 +319,29 @@
           over-confident; below means under-confident.
         </p>
       </div>
+      {% endif %}
     </div>
+    {% endif %}
+
+    {% if not (has_rolling and has_calibration) %}
+    <!-- Compact note covering whichever chart(s) don't have enough data yet. -->
+    <div class="rounded-xl border border-dashed border-chrome-700/60 bg-chrome-800/30 px-5 py-3 flex items-center gap-3 text-xs text-chrome-400">
+      <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0 text-chrome-500" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+      </svg>
+      <span>
+        {% if not has_rolling and not has_calibration %}
+          The <strong class="text-chrome-300">rolling-accuracy</strong> and <strong class="text-chrome-300">calibration</strong> charts
+        {% elif not has_rolling %}
+          The <strong class="text-chrome-300">rolling-accuracy</strong> chart
+        {% else %}
+          The <strong class="text-chrome-300">calibration</strong> chart
+        {% endif %}
+        will appear once more of this season's picks have settled (needs a couple weeks of graded games).
+        The headline win-rate cards above update on every finalized game.
+      </span>
+    </div>
+    {% endif %}
 
     <!-- Per-tier breakdown -->
     {% if tier_breakdown %}

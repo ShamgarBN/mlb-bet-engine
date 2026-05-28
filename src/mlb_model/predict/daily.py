@@ -75,6 +75,20 @@ def predict_for_date(target_date: date_cls, *, refresh_data: bool = True) -> pd.
         except Exception:  # noqa: BLE001
             log.exception("predict.weather.failed")
 
+        # Pull today's live odds from The Odds API so the per-game
+        # market line (ML / RL / total) is available for the market
+        # features join. No-ops cleanly when ``MLB_ODDS_API_KEY`` is
+        # unset -- predictions then fall back to the league-average
+        # baseline as before. One ``/odds`` call covers the whole slate
+        # (3 credits on the free tier).
+        try:
+            from mlb_model.data.sources import odds_api as _odds_api
+
+            wrote = _odds_api.ingest_live_slate()
+            log.info("predict.odds_api.ingested", rows=wrote)
+        except Exception:  # noqa: BLE001
+            log.exception("predict.odds_api.failed")
+
     # Build features. We pass the whole season as training so rolling
     # windows for SP / team form / etc. include all season-to-date games.
     features = build_features_table(season, season)
@@ -189,7 +203,14 @@ def predict_for_date(target_date: date_cls, *, refresh_data: bool = True) -> pd.
     pred_df = pd.DataFrame([p.__dict__ for p in preds])
     pred_df["total_line_source"] = total_line_source
 
-    # Apply calibrators if available
+    # Apply calibrators if available. The totals calibrator is special:
+    # it was trained on direct-classifier p_over values (centered ~0.50)
+    # for games with real market lines. When we fall back to the sim's
+    # p_over against the league-average baseline, those inputs are in a
+    # different distribution (typically 0.2-0.3 here) and the isotonic
+    # mapping collapses them to ~0. Skip the totals calibrator on
+    # baseline rows -- the raw sim p_over is already sensible there.
+    market_line_mask = pred_df["total_line_source"].to_numpy() == "market"
     for market_col, market in [
         ("p_home_win", "moneyline"),
         ("p_home_runline_cover", "runline"),
@@ -197,10 +218,16 @@ def predict_for_date(target_date: date_cls, *, refresh_data: bool = True) -> pd.
     ]:
         try:
             cal = load_calibrator(market)
-            pred_df[market_col + "_raw"] = pred_df[market_col]
-            pred_df[market_col] = cal.transform(pred_df[market_col].to_numpy())
         except FileNotFoundError:
             log.debug("calibrator.missing", market=market)
+            continue
+        raw = pred_df[market_col].to_numpy()
+        pred_df[market_col + "_raw"] = raw
+        if market == "total":
+            calibrated = cal.transform(raw)
+            pred_df[market_col] = np.where(market_line_mask, calibrated, raw)
+        else:
+            pred_df[market_col] = cal.transform(raw)
 
     # Add context columns
     # Forward the new market-derived RL/OU probabilities into the

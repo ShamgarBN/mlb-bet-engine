@@ -109,6 +109,16 @@ def backtest_season(target_season: int, train_start: int) -> SeasonResult | None
         return None
 
     # Restrict to completed games with valid labels for training.
+    # ``home_score`` / ``away_score`` are 0 (not NULL) for unplayed games
+    # in the warehouse, so dropna alone keeps phantom rows. Filter by
+    # ``games.status == 'Final'`` to match the production trainer.
+    from mlb_model.data.warehouse import query as _wh_query
+
+    _final_pks = _wh_query("SELECT game_pk FROM games WHERE status = 'Final'")
+    final_set = set(_final_pks["game_pk"].tolist()) if not _final_pks.empty else set()
+    if final_set:
+        train = train[train["game_pk"].isin(final_set)]
+        test = test[test["game_pk"].isin(final_set)]
     train = train.dropna(subset=["target_home_score", "target_away_score"])
     test_with_labels = test.dropna(subset=["target_home_score", "target_away_score"])
     if test_with_labels.empty:

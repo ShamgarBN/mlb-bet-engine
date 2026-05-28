@@ -489,6 +489,167 @@ def api_clear_picks() -> JSONResponse:
     return JSONResponse({"ok": True, "removed": n})
 
 
+@router.post("/api/season/retrain")
+def api_season_retrain() -> JSONResponse:
+    """Kick off a full pull-data + retrain + validate run in the background.
+
+    Returns immediately. The browser should poll
+    ``/api/season/retrain/status`` to learn when it finishes. If a run
+    is already in flight, responds with 409 so the UI can keep showing
+    "in progress" instead of starting a second one.
+    """
+    from mlb_model.automation import weekly_train
+
+    if not weekly_train.start_background_run():
+        return JSONResponse(
+            {"ok": False, "reason": "already_running"}, status_code=409
+        )
+    log.info("api.season.retrain.started")
+    return JSONResponse({"ok": True, "status": "started"})
+
+
+@router.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request) -> HTMLResponse:
+    """Standalone settings page. Currently just the Odds API key form.
+
+    Shows a masked preview of the currently-configured key (if any) so
+    the user can confirm the right key landed.
+    """
+    from mlb_model.config import settings as _s
+    import os
+
+    env_path = _s.project_root / ".env"
+    # Prefer the settings-loaded value (which reflects the .env file at
+    # boot time). Fall back to the live env var so a freshly-saved key
+    # shows up immediately on the next page load.
+    key = _s.odds_api_key or os.environ.get("MLB_ODDS_API_KEY")
+    if key:
+        # Mask: keep first 4 + last 4 chars, hide the middle.
+        if len(key) > 8:
+            masked = key[:4] + "…" + key[-4:]
+        else:
+            masked = "…" + key[-2:]
+        key_source = ".env" if env_path.exists() else "environment variable"
+    else:
+        masked = None
+        key_source = ""
+
+    return _render(
+        request,
+        "settings.html",
+        {
+            "current_key_masked": masked,
+            "key_source": key_source,
+            "env_path": str(env_path),
+            "warehouse_path": str(_s.warehouse_path),
+            "model_dir": str(_s.model_dir),
+        },
+    )
+
+
+def _write_env_key(api_key: str) -> Path:
+    """Write or update ``MLB_ODDS_API_KEY=<value>`` in ``<project_root>/.env``.
+
+    Empty ``api_key`` removes the line. Preserves any other lines in the
+    file so we don't clobber unrelated config.
+    """
+    from mlb_model.config import settings as _s
+
+    env_path = _s.project_root / ".env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    # Drop any existing MLB_ODDS_API_KEY=... line.
+    lines = [ln for ln in lines if not ln.strip().startswith("MLB_ODDS_API_KEY=")]
+    if api_key:
+        lines.append(f"MLB_ODDS_API_KEY={api_key}")
+    env_path.write_text("\n".join(lines).rstrip("\n") + ("\n" if lines else ""), encoding="utf-8")
+    return env_path
+
+
+@router.post("/api/settings/odds-key")
+def api_save_odds_key(payload: dict[str, Any]) -> JSONResponse:
+    """Persist (or remove) the Odds API key.
+
+    Body: ``{"api_key": "<32-hex-chars>"}``. Empty string removes it.
+    Sets the live ``MLB_ODDS_API_KEY`` env var too so the next Refresh
+    picks up the new key without restarting the app.
+    """
+    import os
+
+    key = str(payload.get("api_key") or "").strip()
+    try:
+        env_path = _write_env_key(key)
+    except OSError as exc:
+        return JSONResponse({"ok": False, "error": f"Could not write {exc}"}, status_code=500)
+    # Update the running process so the next /api/refresh sees the key.
+    if key:
+        os.environ["MLB_ODDS_API_KEY"] = key
+    else:
+        os.environ.pop("MLB_ODDS_API_KEY", None)
+    log.info("api.settings.odds_key.saved", set=bool(key), env_path=str(env_path))
+    return JSONResponse({"ok": True, "env_path": str(env_path)})
+
+
+@router.post("/api/settings/odds-key/test")
+def api_test_odds_key(payload: dict[str, Any]) -> JSONResponse:
+    """Probe The Odds API with the provided key. Returns ok + quota info,
+    or a structured error message. Does NOT persist the key.
+    """
+    import httpx
+
+    key = str(payload.get("api_key") or "").strip()
+    if not key:
+        return JSONResponse({"ok": False, "error": "No key supplied."}, status_code=400)
+
+    url = "https://api.the-odds-api.com/v4/sports"
+    try:
+        with httpx.Client(timeout=10.0) as c:
+            r = c.get(url, params={"apiKey": key})
+    except httpx.HTTPError as exc:
+        return JSONResponse({"ok": False, "error": f"Network error: {exc}"}, status_code=502)
+
+    if r.status_code == 401:
+        return JSONResponse({"ok": False, "error": "Key rejected (401). Double-check that you copied the whole key."})
+    if r.status_code == 429:
+        return JSONResponse({"ok": False, "error": "Rate-limited (429). Wait a minute, then try again."})
+    if r.status_code != 200:
+        return JSONResponse({"ok": False, "error": f"HTTP {r.status_code}: {r.text[:200]}"})
+
+    # The Odds API includes quota stats in response headers.
+    remaining = r.headers.get("x-requests-remaining")
+    used = r.headers.get("x-requests-used")
+    return JSONResponse(
+        {
+            "ok": True,
+            "requests_remaining": int(remaining) if remaining and remaining.isdigit() else None,
+            "requests_used": int(used) if used and used.isdigit() else None,
+        }
+    )
+
+
+@router.get("/api/season/retrain/status")
+def api_season_retrain_status() -> JSONResponse:
+    """Return current state for the season-retrain button.
+
+    ``running``         -- a background retrain is in flight.
+    ``last_completed``  -- ISO date of the last successful retrain (any source).
+    ``last_result``     -- the most recent UI-triggered run's outcome dict
+                            (None until at least one has finished).
+    """
+    from mlb_model.automation import weekly_train
+
+    last = weekly_train.last_run_date()
+    return JSONResponse(
+        {
+            "running": weekly_train.is_running(),
+            "last_completed": last.isoformat() if last else None,
+            "last_result": weekly_train.last_result(),
+        }
+    )
+
+
 @router.get("/api/totals/probability")
 def api_total_prob(
     game_pk: int,

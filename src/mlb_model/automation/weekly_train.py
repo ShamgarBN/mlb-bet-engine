@@ -39,6 +39,14 @@ KEEP_ARCHIVES = 5
 ACCURACY_REGRESSION_TOLERANCE_PP = 2.0  # percentage points
 TRAINING_WINDOW_YEARS = 6
 
+# Touched while ``run_weekly_train`` is in flight so the UI can disable
+# the "Retrain now" button. The contents are the ISO start time so a
+# stale lock from a crashed previous run can be detected (>30 min old
+# is considered abandoned).
+STATUS_PATH = settings.cache_dir / "weekly_train_status.txt"
+RESULT_PATH = settings.cache_dir / "weekly_train_result.json"
+STALE_RUN_MINUTES = 45
+
 
 def last_run_date() -> date | None:
     if not MARKER_PATH.exists():
@@ -165,24 +173,26 @@ def run_weekly_train(through_season: int | None = None) -> dict[str, Any]:
     # 2) Archive current models.
     archive = _archive_current_models()
 
-    # 3) Refit. We invoke the same ``mlb-model train`` command the user
-    #    runs manually so the walk-forward backtest is the single source
-    #    of truth -- no duplicated training pipeline to drift.
-    import subprocess
-    import sys
+    # 3) Refit. Call the canonical CLI training function directly so the
+    #    walk-forward backtest stays the single source of truth -- no
+    #    duplicated training pipeline to drift. Direct call (instead of a
+    #    subprocess) is also what lets this work inside a PyInstaller
+    #    bundle, where ``sys.executable`` is the .app binary and
+    #    ``python -m mlb_model`` is not a valid invocation.
+    from mlb_model.cli import train as _train_cmd
 
     train_window_start = through_season - TRAINING_WINDOW_YEARS
     try:
-        subprocess.run(
-            [
-                sys.executable, "-m", "mlb_model",
-                "train",
-                "--through-season", str(through_season),
-                "--train-start", str(train_window_start),
-            ],
-            check=True,
-        )
-    except subprocess.CalledProcessError:
+        _train_cmd(through_season=through_season, train_start=train_window_start)
+    except SystemExit as exc:  # typer.Exit subclasses SystemExit
+        # SystemExit(0) means a clean "early return" from train (e.g.
+        # nothing to do). Anything else means training failed.
+        if int(getattr(exc, "code", 0) or 0) != 0:
+            log.exception("weekly_train.refit.failed")
+            if archive is not None:
+                _restore_from_archive(archive)
+            raise
+    except Exception:  # noqa: BLE001 -- restore archive on any failure
         log.exception("weekly_train.refit.failed")
         if archive is not None:
             _restore_from_archive(archive)
@@ -273,3 +283,73 @@ def _maybe_trigger_end_of_season(through_season: int) -> dict[str, Any] | None:
         "output_dir": report.output_dir,
         "report_md": report.report_md_path,
     }
+
+
+# ---------------------------------------------------------------------------
+# UI-driven async retrain (the "Retrain now" button on /season)
+# ---------------------------------------------------------------------------
+
+
+def is_running() -> bool:
+    """True iff a retrain is in flight. Stale locks (>STALE_RUN_MINUTES old)
+    from a crashed previous process are treated as not-running.
+    """
+    if not STATUS_PATH.exists():
+        return False
+    try:
+        started = datetime.fromisoformat(STATUS_PATH.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        return False
+    age_min = (datetime.now() - started).total_seconds() / 60.0
+    if age_min > STALE_RUN_MINUTES:
+        STATUS_PATH.unlink(missing_ok=True)
+        return False
+    return True
+
+
+def last_result() -> dict[str, Any] | None:
+    """Return the last ``run_weekly_train`` result dict written by the
+    UI-driven background runner. Distinct from ``last_run_date()`` which
+    only reports the success marker for CLI/Sunday runs.
+    """
+    if not RESULT_PATH.exists():
+        return None
+    try:
+        import json
+        return json.loads(RESULT_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def start_background_run(through_season: int | None = None) -> bool:
+    """Spawn ``run_weekly_train`` in a daemon thread. Returns False if
+    a retrain is already in flight (caller should surface a 409).
+    """
+    import json
+    import threading
+
+    if is_running():
+        return False
+    STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATUS_PATH.write_text(datetime.now().isoformat(timespec="seconds"), encoding="utf-8")
+
+    def _worker() -> None:
+        try:
+            result = run_weekly_train(through_season=through_season)
+            payload = {"ok": True, "finished_at": datetime.now().isoformat(), "result": result}
+        except Exception as exc:  # noqa: BLE001 -- want the UI to see failures
+            log.exception("weekly_train.background.failed")
+            payload = {
+                "ok": False,
+                "finished_at": datetime.now().isoformat(),
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        try:
+            RESULT_PATH.write_text(json.dumps(payload, default=str), encoding="utf-8")
+        except OSError:
+            log.exception("weekly_train.background.result_write_failed")
+        finally:
+            STATUS_PATH.unlink(missing_ok=True)
+
+    threading.Thread(target=_worker, daemon=True, name="weekly-train").start()
+    return True

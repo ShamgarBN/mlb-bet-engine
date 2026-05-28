@@ -82,7 +82,15 @@ will render this table fresh.
 - **Baseball Savant** → expected stats (xwOBA, xBA, xSLG, EV, barrel%)
 - **Open-Meteo / NOAA** → free weather (temp, wind, humidity, pressure)
 - **Umpire Scorecards** → plate umpire tendencies
-- **SportsBookReviewsOnline** → historical closing lines (backtest only)
+- **Historical closing lines** (backtest only):
+  - SportsBookReviewsOnline / Kaggle dump → 2012–2021
+  - [ArnavSaraogi/mlb-odds-scraper](https://github.com/ArnavSaraogi/mlb-odds-scraper)
+    free JSON dataset → 2021–2025, six books (FanDuel, DraftKings, BetMGM,
+    Caesars, Bet365, BetRivers), opening + closing lines
+- **[The Odds API](https://the-odds-api.com)** → *live* per-game ML / RL / O/U
+  for today's slate. Optional; free tier (500 credits/month, ~5 per refresh) is
+  plenty for one pull a day. Add your key in-app on the **Settings** page. Without
+  a key the app falls back to a season-aware league-average total line.
 
 ## What's modelled (feature set)
 
@@ -215,16 +223,22 @@ Pages:
   finalized scores, and rendered as per-market summaries (win rate, P/L,
   **CLV proxy** = mean edge at posting time, Brier, log-loss), a
   rolling-30-day win-rate chart, a calibration curve (does 65%-confidence
-  actually win 65% of the time?), and a per-tier breakdown. This view is
-  the honest answer to "how is the model doing right now?" — it's not
-  filtered down to picks you tagged. When an end-of-season report
-  exists for the selected season, a banner links to the report's
-  markdown. A "What do these numbers mean?" disclosure inlines a
-  glossary of every metric.
+  actually win 65% of the time?), and a per-tier breakdown. The rolling
+  and calibration charts only appear once enough graded games exist
+  (early in a season they collapse to a one-line note instead of empty
+  space). A **Retrain & analyze** button runs a fresh pull + refit +
+  14-day validation in the background and reports whether the new model
+  was promoted or rolled back. When an end-of-season report exists for
+  the selected season, a banner links to the report's markdown. A "What
+  do these numbers mean?" disclosure inlines a glossary of every metric.
 - `/performance` — Walk-forward backtest table + 2026 season-to-date.
 - `/log` — Your **logged picks** with stake editing, per-row delete, and
   a "clear all" button. Outcomes auto-grade once the box score finalizes;
   ROI scales by stake.
+- `/settings` — One-time config for **live odds**. Paste your The Odds API
+  key, click **Test key** to validate it against the API (shows remaining
+  monthly credits) and **Save** to persist it. Stored locally in a `.env`
+  beside the warehouse; never leaves the machine.
 
 ### Season-long tracking and end-of-season self-evaluation
 
@@ -298,36 +312,37 @@ uv run mlb-model install-schedule --uninstall
 
 The app footer shows the last successful run of each job.
 
-### Moving the project to another Mac
+### Shipping a standalone .app / DMG to another Mac
 
-The .app bundle is just a 30 KB launcher -- it can't run on its own. To
-transfer everything to a second laptop:
-
-```bash
-./scripts/package_for_transfer.sh             # default: ~25 MB tarball
-./scripts/package_for_transfer.sh --full      # ~1 GB; includes HTTP cache
-```
-
-This produces `~/Desktop/mlb-model-transfer-<timestamp>.tar.gz` with the
-source, trained models, DuckDB warehouse, picks log, and the .app bundle.
-The platform-specific `.venv/` and the regeneratable `http_cache.sqlite`
-are excluded by default.
-
-On the destination Mac:
+The recommended path is a **self-contained PyInstaller bundle** — it embeds
+Python, every dependency, the warehouse, and the trained models, so the target
+Mac needs *nothing* installed (no uv, no Python, no clone). See
+[`packaging/README.md`](packaging/README.md) for full detail. Short version:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh   # if uv isn't installed
-mkdir -p ~/Projects && cd ~/Projects
-tar -xzf ~/Downloads/mlb-model-transfer-*.tar.gz
-xattr -dr com.apple.quarantine ~/Projects/mlb-model
-cd ~/Projects/mlb-model
-./scripts/build_app_bundle.sh                     # re-sign the .app locally
-open "MLB Forecast.app"                           # first launch: ~30-60s
+# Build on an Apple Silicon Mac (arm64-only bundle)
+uv sync --all-extras                                 # includes the `package` extra
+uv run pyinstaller --noconfirm packaging/mlb_forecast.spec   # → dist/MLB Forecast.app
+bash packaging/make_dmg.sh                           # → ./MLB-Forecast-arm64.dmg (project root)
 ```
 
-Both Macs now have identical models, warehouse, and history. The
-packaging script refuses to run while the app is open (prevents copying
-DuckDB mid-transaction).
+The finished `MLB-Forecast-arm64.dmg` (~230 MB compressed) lands at the project
+root. On the target Mac: open the DMG, drag **MLB Forecast** to Applications,
+launch. First launch copies the bundled warehouse + models into
+`~/Library/Application Support/MLB Forecast/` (a writable home that survives
+reinstalls), then opens instantly thereafter. Enter your Odds API key once on
+the Settings page and it persists across restarts.
+
+> Note: the bundle is **arm64-only** by design. Build on Apple Silicon; if your
+> dev Python is x86_64 (Intel Homebrew), run `uv python install 3.13 && rm -rf
+> .venv && uv sync --all-extras` first to get arm64 wheels.
+
+**Developer transfer** (source + warehouse for a second dev environment, not an
+end-user install) still works via the tarball script:
+
+```bash
+./scripts/package_for_transfer.sh             # ~25 MB: source + models + warehouse
+```
 
 ### Persisted artifacts
 
@@ -338,12 +353,19 @@ data/cache/predictions/<YYYY-MM-DD>.parquet   # per-date predictions cache
 data/cache/picks_log.parquet                  # logged picks + graded outcomes
 data/cache/last_morning_sync.txt              # marker for the morning job
 data/cache/last_weekly_train.txt              # marker for the weekly job
+data/cache/weekly_train_status.txt            # present while a Retrain & analyze run is in flight
+data/cache/weekly_train_result.json           # outcome of the last UI-triggered retrain
 data/journal/predictions.parquet              # append-only model journal (every prediction ever made)
+.env                                          # MLB_ODDS_API_KEY (written by the Settings page)
 models/*.joblib                               # trained models + calibrators
 models/archive/<timestamp>/                   # rollback copies (last 5)
 reports/end_of_season_<YEAR>/                 # annual self-evaluation reports
 logs/desktop_launcher.log                     # .app launcher diagnostics
 ```
+
+> In a packaged .app these paths are rooted at
+> `~/Library/Application Support/MLB Forecast/` instead of the repo, so your
+> data and saved key persist across app reinstalls.
 
 ## Project layout
 
@@ -368,6 +390,7 @@ src/mlb_model/
     automation/          # morning-sync, weekly-train, LaunchAgent installer
     journal/             # append-only prediction log + season grading
     season/              # season-state detection + end-of-season sweep
+packaging/               # PyInstaller spec + entry point + make_dmg.sh (standalone .app/DMG)
 notebooks/               # exploration + backtest reports
 tests/
 data/                    # gitignored — raw + cached pulls live here
