@@ -29,6 +29,16 @@ arnav_path = PROJECT_ROOT / "data" / "raw" / "odds_scraped" / "mlb_odds_dataset.
 if arnav_path.exists():
     datas.append((str(arnav_path), "data/raw/odds_scraped"))
 
+# Walk-forward backtest results power the /performance page. Bundle the
+# canonical CSV so the page has data on first launch instead of an empty
+# "No backtest CSVs found" state.
+backtest_csv = PROJECT_ROOT / "logs" / "backtest_v4.csv"
+if backtest_csv.exists():
+    datas.append((str(backtest_csv), "logs"))
+backtest_2026 = PROJECT_ROOT / "logs" / "backtest_2026.csv"
+if backtest_2026.exists():
+    datas.append((str(backtest_2026), "logs"))
+
 # --- Hidden imports ---------------------------------------------------------
 # PyInstaller's static analyzer misses several things:
 #   1. anything imported via a string in uvicorn / FastAPI / pywebview
@@ -127,12 +137,12 @@ app = BUNDLE(
     name="MLB Forecast.app",
     icon=str(PROJECT_ROOT / "packaging" / "MLBForecast.icns"),
     bundle_identifier="com.mlbforecast.app",
-    version="1.1.0",
+    version="1.1.1",
     info_plist={
         "CFBundleDisplayName": "MLB Forecast",
         "CFBundleName": "MLB Forecast",
-        "CFBundleShortVersionString": "1.1.0",
-        "CFBundleVersion": "1.1.0",
+        "CFBundleShortVersionString": "1.1.1",
+        "CFBundleVersion": "1.1.1",
         # Keep the app out of the Dock's "Recent" list spam; user can
         # still cmd-tab to it. The window is opened by pywebview.
         "LSBackgroundOnly": False,
