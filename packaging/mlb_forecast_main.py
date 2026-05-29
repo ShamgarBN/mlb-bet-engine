@@ -76,6 +76,20 @@ def _prepare_app_support_root() -> Path:
     if src_raw.exists() and not dst_raw.exists():
         shutil.copytree(src_raw, dst_raw)
 
+    # Backtest CSVs power the /performance page. Copy any that ship in
+    # the bundle but aren't already present in the support root, so a
+    # fresh install shows results instead of an empty "no CSVs" state.
+    # (Copy per-file rather than the whole dir so we never clobber the
+    # live mlb_model.log the running app writes to.)
+    src_logs = bundle / "logs"
+    dst_logs = support / "logs"
+    if src_logs.exists():
+        dst_logs.mkdir(parents=True, exist_ok=True)
+        for csv in src_logs.glob("*.csv"):
+            target = dst_logs / csv.name
+            if not target.exists():
+                shutil.copy2(csv, target)
+
     return support
 
 
