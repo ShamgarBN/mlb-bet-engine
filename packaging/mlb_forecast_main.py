@@ -148,7 +148,21 @@ def main() -> None:
     from mlb_model.logging import configure_logging
 
     configure_logging()
-    launch_native_window()
+    try:
+        launch_native_window()
+    finally:
+        # Shutdown-order crash workaround: when AppKit's terminate: fires
+        # exit() at quit, __cxa_finalize_ranges runs C++ static destructors.
+        # DuckDB's destructor tries to release Python references and call
+        # PyEval_SaveThread, but Python's interpreter is already gone --
+        # NULL-deref at 0xb0, SIGSEGV, crash report every time. By calling
+        # os._exit() we skip the broken cleanup pass entirely. Safe here
+        # because: the journal + picks-log + DuckDB writes all happen
+        # synchronously per-request, loguru flushes per write, and the
+        # uvicorn server has already been told to stop by the pywebview
+        # `closed` callback. The OS reclaims memory the same as a clean
+        # exit would.
+        os._exit(0)
 
 
 if __name__ == "__main__":
