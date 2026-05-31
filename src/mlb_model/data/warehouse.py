@@ -220,6 +220,25 @@ _DDL: list[str] = [
         PRIMARY KEY (game_date, home_team_abbr, away_team_abbr, book)
     )
     """,
+    # batter_statcast_season: per-batter per-season expected-stats + power
+    # metrics from Baseball Savant. Refreshed once a day from pybaseball
+    # (statcast_batter_expected_stats + statcast_batter_exitvelo_barrels).
+    """
+    CREATE TABLE IF NOT EXISTS batter_statcast_season (
+        player_id     INTEGER NOT NULL,
+        season        INTEGER NOT NULL,
+        pa            INTEGER,
+        bip           INTEGER,
+        xba           DOUBLE,
+        xslg          DOUBLE,
+        xwoba         DOUBLE,
+        barrel_pct    DOUBLE,   -- 0..1 (fraction of BBE that were barrels)
+        hardhit_pct   DOUBLE,   -- 0..1 (fraction of BBE >= 95 mph)
+        ev_avg        DOUBLE,
+        last_updated  TIMESTAMP,
+        PRIMARY KEY (player_id, season)
+    )
+    """,
 ]
 
 _INDEXES: list[str] = [
@@ -230,6 +249,7 @@ _INDEXES: list[str] = [
     "CREATE INDEX IF NOT EXISTS idx_bgs_batter ON batter_game_stats(batter_id)",
     "CREATE INDEX IF NOT EXISTS idx_tbs_team ON team_boxscores(team_id)",
     "CREATE INDEX IF NOT EXISTS idx_odds_date ON odds_history(game_date)",
+    "CREATE INDEX IF NOT EXISTS idx_bss_season ON batter_statcast_season(season)",
 ]
 
 

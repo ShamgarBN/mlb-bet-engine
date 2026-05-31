@@ -164,6 +164,14 @@ def get_matchups_for_date(
         return []
 
     season = target.year
+    # Best-effort refresh of the batter Statcast warehouse (12h throttled).
+    # Never block the page on this -- if Savant is down or pybaseball
+    # errors, we degrade to MLB Stats API totals only.
+    try:
+        from mlb_model.data.sources import batter_statcast as _bsc
+        _bsc.maybe_refresh(season)
+    except Exception:  # noqa: BLE001
+        log.exception("matchups.batter_statcast.refresh_failed", season=season)
     batters_df = batter_season_stats(season)
     pitchers_df = pitcher_season_stats(season)
 

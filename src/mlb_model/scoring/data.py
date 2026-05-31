@@ -89,17 +89,63 @@ GROUP BY 1
 
 
 def batter_season_stats(season: int) -> pd.DataFrame:
-    """One row per batter with season totals + splits vs L/R SPs.
+    """One row per batter with season totals + splits + Statcast quality.
 
-    Returns a DataFrame indexed by ``batter_id`` containing both overall
-    season stats and per-handedness splits. Rate stats (avg/obp/etc.) are
-    *not* pre-computed -- :func:`batter_inputs_for` does that lazily so
-    we control the league-prior shrinkage in one place.
+    Also joins the **prior season's** totals + Statcast (prefix ``prior_``).
+    :func:`batter_inputs_for` blends current-season stats toward prior using
+    a PA-weighted taper so early-season hitters with ~10 PA carry their
+    real talent profile instead of being shrunk straight to league mean.
     """
     df = query(_BATTER_SEASON_SQL, (season,))
     if df.empty:
         return df
+    sc = query(
+        """
+        SELECT player_id AS batter_id, pa AS sc_pa, bip AS sc_bip,
+               xba, xslg, xwoba, barrel_pct, hardhit_pct, ev_avg
+        FROM batter_statcast_season WHERE season = ?
+        """,
+        (season,),
+    )
+    if not sc.empty:
+        df = df.merge(sc, on="batter_id", how="left")
+
+    # Prior-season aggregates (game-log) for talent-anchored blending.
+    prior = query(_BATTER_SEASON_SQL, (season - 1,))
+    if not prior.empty:
+        prior = prior.add_prefix("prior_").rename(columns={"prior_batter_id": "batter_id"})
+        df = df.merge(prior, on="batter_id", how="left")
+    # Prior-season Statcast (xBA, xSLG, etc.) — same naming convention.
+    prior_sc = query(
+        """
+        SELECT player_id AS batter_id, pa AS prior_sc_pa, bip AS prior_sc_bip,
+               xba AS prior_xba, xslg AS prior_xslg, xwoba AS prior_xwoba,
+               barrel_pct AS prior_barrel_pct, hardhit_pct AS prior_hardhit_pct,
+               ev_avg AS prior_ev_avg
+        FROM batter_statcast_season WHERE season = ?
+        """,
+        (season - 1,),
+    )
+    if not prior_sc.empty:
+        df = df.merge(prior_sc, on="batter_id", how="left")
     return df.set_index("batter_id")
+
+
+def _blend(current, prior, current_pa: int, full_at_pa: int = 200):
+    """PA-weighted blend toward a player-specific prior.
+
+    weight = max(0, 1 - current_pa / full_at_pa)  → 1 at 0 PA, 0 at full_at_pa.
+    Returns the current value when prior is missing, and vice versa.
+    Both None → None.
+    """
+    if current is None and prior is None:
+        return None
+    if current is None:
+        return prior
+    if prior is None:
+        return current
+    w = max(0.0, 1.0 - (current_pa or 0) / max(1, full_at_pa))
+    return current * (1 - w) + prior * w
 
 
 # ---------------------------------------------------------------------------
@@ -390,13 +436,39 @@ def batter_inputs_for(
     tb = _val(batter_row, "tb")
     k = _val(batter_row, "k")
 
-    season_avg = _safe(h, ab)
-    season_obp = _safe(h + bb + hbp, ab + bb + hbp + sf) if pa else None
-    season_slg = _safe(tb, ab)
+    # Current-season raw rates
+    cur_avg = _safe(h, ab)
+    cur_obp = _safe(h + bb + hbp, ab + bb + hbp + sf) if pa else None
+    cur_slg = _safe(tb, ab)
+    cur_k_pct = _safe(k, pa)
+    cur_bb_pct = _safe(bb, pa)
+
+    # Prior-season raw rates (from joined ``prior_*`` columns)
+    p_ab  = _val(batter_row, "prior_ab")
+    p_pa  = _val(batter_row, "prior_pa")
+    p_h   = _val(batter_row, "prior_h")
+    p_bb  = _val(batter_row, "prior_bb")
+    p_hbp = _val(batter_row, "prior_hbp")
+    p_tb  = _val(batter_row, "prior_tb")
+    p_k   = _val(batter_row, "prior_k")
+    prior_avg    = _safe(p_h, p_ab)
+    prior_obp    = _safe(p_h + p_bb + p_hbp, p_ab + p_bb + p_hbp) if p_pa else None
+    prior_slg    = _safe(p_tb, p_ab)
+    prior_k_pct  = _safe(p_k, p_pa)
+    prior_bb_pct = _safe(p_bb, p_pa)
+
+    # Blend toward the prior-season profile when current PA is small.
+    season_avg    = _blend(cur_avg,    prior_avg,    int(pa))
+    season_obp    = _blend(cur_obp,    prior_obp,    int(pa))
+    season_slg    = _blend(cur_slg,    prior_slg,    int(pa))
     season_ops = (season_obp + season_slg) if (season_obp is not None and season_slg is not None) else None
     season_iso = (season_slg - season_avg) if (season_avg is not None and season_slg is not None) else None
-    season_k_pct = _safe(k, pa)
-    season_bb_pct = _safe(bb, pa)
+    season_k_pct  = _blend(cur_k_pct,  prior_k_pct,  int(pa))
+    season_bb_pct = _blend(cur_bb_pct, prior_bb_pct, int(pa))
+
+    # Inflate the *effective* sample size used for shrinkage so a 12-PA
+    # batter with a real 500-PA prior season isn't treated as small.
+    effective_pa = int(pa) + int((p_pa or 0) * max(0, 1 - int(pa) / 200))
 
     # Split vs the opposing SP's hand
     if opposing_sp_throws in ("L", "R"):
@@ -414,15 +486,54 @@ def batter_inputs_for(
     split_iso = (split_slg - split_avg) if (split_avg is not None and split_slg is not None) else None
     split_k_pct = _safe(sk, spa)
 
+    # Statcast quality — also blended toward prior-year batter Statcast.
+    def _f(key: str) -> float | None:
+        v = _val(batter_row, key, default=None)
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    sc_pa_v = _val(batter_row, "sc_pa", default=0)
+    try:
+        sc_pa_int = int(sc_pa_v) if sc_pa_v not in (None, 0) else 0
+    except (TypeError, ValueError):
+        sc_pa_int = 0
+
+    xba_v   = _blend(_f("xba"),         _f("prior_xba"),         sc_pa_int)
+    xslg_v  = _blend(_f("xslg"),        _f("prior_xslg"),        sc_pa_int)
+    xwoba_v = _blend(_f("xwoba"),       _f("prior_xwoba"),       sc_pa_int)
+    barrel  = _blend(_f("barrel_pct"),  _f("prior_barrel_pct"),  sc_pa_int)
+    hh      = _blend(_f("hardhit_pct"), _f("prior_hardhit_pct"), sc_pa_int)
+    ev      = _blend(_f("ev_avg"),      _f("prior_ev_avg"),      sc_pa_int)
+
+    bip_raw = _val(batter_row, "sc_bip", default=None)
+    prior_bip_raw = _val(batter_row, "prior_sc_bip", default=None)
+    try:
+        cur_bip = int(bip_raw) if bip_raw is not None else 0
+    except (TypeError, ValueError):
+        cur_bip = 0
+    try:
+        pr_bip = int(prior_bip_raw) if prior_bip_raw is not None else 0
+    except (TypeError, ValueError):
+        pr_bip = 0
+    # Effective BIP for downstream shrinkage: same taper as PA.
+    bip_int = cur_bip + int(pr_bip * max(0, 1 - cur_bip / 100)) if (cur_bip or pr_bip) else None
+
     return BatterInputs(
         bats=bats,
         season_avg=season_avg, season_obp=season_obp, season_slg=season_slg,
         season_ops=season_ops, season_iso=season_iso,
         season_k_pct=season_k_pct, season_bb_pct=season_bb_pct,
-        season_pa=int(pa),
+        # Use *effective* PA (current + prior-weighted) so the scoring
+        # module's shrinkage logic treats a blended profile correctly.
+        season_pa=effective_pa,
         split_avg=split_avg, split_slg=split_slg, split_iso=split_iso,
         split_k_pct=split_k_pct, split_pa=int(spa),
-        # Statcast quality stats not in our warehouse yet (graceful None).
+        xba=xba_v, xslg=xslg_v, xwoba=xwoba_v,
+        barrel_pct=barrel, hardhit_pct=hh, avg_ev=ev, bip=bip_int,
     )
 
 
