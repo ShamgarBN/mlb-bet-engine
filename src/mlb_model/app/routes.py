@@ -200,6 +200,36 @@ def game_detail(
     return _render(request, "game_detail.html", {"g": detail, "target_date": target})
 
 
+@router.get("/matchups", response_class=HTMLResponse)
+def matchups_page(
+    request: Request,
+    date: str | None = Query(default=None),
+    refresh: bool = Query(default=False),
+) -> HTMLResponse:
+    """Per-game hitter prop matchups (hit / HR / TB / K scores 0-10).
+
+    Anchored 0-10 design (5.0 = league-average matchup), scored from
+    season-to-date warehouse aggregates + live MLB Stats API lineups.
+    """
+    from mlb_model.scoring.service import get_matchups_for_date
+
+    target = _parse_date(date)
+    try:
+        matchups = get_matchups_for_date(target, refresh=refresh)
+    except Exception as exc:  # noqa: BLE001 -- show the error inline
+        log.exception("matchups.failed", target=target)
+        return _render(
+            request,
+            "matchups.html",
+            {"target_date": target, "matchups": [], "error": f"{type(exc).__name__}: {exc}"},
+        )
+    return _render(
+        request,
+        "matchups.html",
+        {"target_date": target, "matchups": matchups, "error": None},
+    )
+
+
 @router.get("/performance", response_class=HTMLResponse)
 def performance(request: Request) -> HTMLResponse:
     df = services.load_backtest()

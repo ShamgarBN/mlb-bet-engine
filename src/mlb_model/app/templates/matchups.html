@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+{% block title %}Matchups{% endblock %}
+
+{% block content %}
+<style>
+  /* --- mlb-scout-inspired typography + palette --- */
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Barlow+Condensed:wght@500;600;700;800;900&display=swap');
+  .mu-mono   { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace; }
+  .mu-cond   { font-family: 'Barlow Condensed', sans-serif; letter-spacing: 1.5px; text-transform: uppercase; font-weight: 700; }
+
+  /* score color tiers (anchored at 5.0) */
+  .s-elite  { color: #22c55e; font-weight: 700; }   /* >= 7.0 */
+  .s-good   { color: #86efac; }                      /* >= 5.5 */
+  .s-avg    { color: #94a3b8; }                      /* 4.5 - 5.5 */
+  .s-below  { color: #fca5a5; }                      /* 3.0 - 4.5 */
+  .s-poor   { color: #ef4444; font-weight: 700; }    /* < 3.0 */
+  .s-na     { color: #475569; }
+
+  /* hand badges */
+  .h-l { background: rgba(59,130,246,.15);  color: #93c5fd; }
+  .h-r { background: rgba(239,68,68,.12);  color: #fca5a5; }
+  .h-s { background: rgba(167,139,250,.15); color: #c4b5fd; }
+  .h-na{ background: rgba(255,255,255,.04); color: #64748b; }
+
+  .park-up { background: rgba(34,197,94,.10); color: #22c55e; }
+  .park-dn { background: rgba(239,68,68,.10); color: #ef4444; }
+  .park-n  { background: rgba(255,255,255,.04); color: #64748b; }
+
+  /* inline horizontal bar for the score column */
+  .score-cell { display: flex; align-items: center; gap: 5px; min-width: 76px; justify-content: flex-end; }
+  .score-bar-bg { width: 38px; height: 5px; background: #1e293b; border-radius: 3px; overflow: hidden; }
+  .score-bar-fl { height: 100%; border-radius: 3px; }
+  .score-num { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; font-weight: 700; min-width: 22px; text-align: right; }
+</style>
+
+<section class="space-y-5">
+  <!-- Header -->
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h1 class="text-2xl font-semibold text-white">Matchups</h1>
+      <p class="text-sm text-chrome-400 mt-1 max-w-2xl">
+        Per-hitter prop scores for today's slate. Each score is 0–10 anchored
+        at <span class="font-mono text-chrome-300">5.0 = league-average</span> matchup &mdash;
+        the pitcher you're facing is by far the biggest factor.
+      </p>
+      <details class="text-xs text-chrome-500 mt-2 max-w-2xl">
+        <summary class="cursor-pointer text-chrome-400 hover:text-chrome-200 select-none">What do these scores mean?</summary>
+        <dl class="mt-2 grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-1.5 text-chrome-400">
+          <div><dt class="inline font-semibold text-chrome-300">HIT</dt> — probability of 1+ hit. 5.0 = avg, 7+ = elevated.</div>
+          <div><dt class="inline font-semibold text-chrome-300">HR</dt> — home-run likelihood. Needs Statcast (degrades gracefully without).</div>
+          <div><dt class="inline font-semibold text-chrome-300">TB</dt> — total bases (over 1.5). Blend of hit + power.</div>
+          <div><dt class="inline font-semibold text-chrome-300">K</dt> — strikeout (1+). High = K likely; low = batter avoids K.</div>
+          <div class="md:col-span-2"><dt class="inline font-semibold text-chrome-300">Switch hitters</dt> — resolved to the opposite hand of today's SP. Shown as <span class="mu-mono">S→L</span> or <span class="mu-mono">S→R</span>.</div>
+        </dl>
+      </details>
+    </div>
+    <form method="get" action="/matchups" class="flex items-center gap-2 text-sm">
+      <input type="date" name="date" value="{{ target_date.isoformat() }}"
+             onchange="this.form.submit()"
+             class="rounded-md border border-chrome-700/60 bg-chrome-800/60 text-chrome-100 px-3 py-1.5 mu-mono text-xs [color-scheme:dark]">
+      <button type="submit" name="refresh" value="true"
+              class="text-xs rounded-md border border-brand-700/60 bg-brand-700/30 hover:bg-brand-700/50 text-brand-100 px-3 py-1.5 mu-cond">
+        Refresh
+      </button>
+    </form>
+  </div>
+
+  {% if error %}
+    <div class="rounded-lg border border-rose-700/60 bg-rose-900/30 p-4 text-sm">
+      <div class="font-semibold text-rose-200 mb-1">Couldn't load matchups</div>
+      <div class="text-xs text-rose-300/80 mu-mono break-all">{{ error }}</div>
+    </div>
+  {% endif %}
+
+  {% if not matchups %}
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-10 text-center">
+      <h2 class="text-lg font-semibold text-white mb-1">No games on {{ target_date.strftime('%A, %B %-d, %Y') }}</h2>
+      <p class="text-sm text-chrome-400 max-w-md mx-auto">
+        Try a different date, or click <em>Refresh</em> to pull today's slate.
+      </p>
+    </div>
+  {% else %}
+
+  <!-- One card per game -->
+  <div class="space-y-5">
+    {% for g in matchups %}
+    {% set pf = g.park_factor or 1.0 %}
+    {% set pf_class = 'park-up' if pf > 1.02 else ('park-dn' if pf < 0.98 else 'park-n') %}
+    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 overflow-hidden">
+      <!-- Header strip -->
+      <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-chrome-900/40 border-b border-chrome-700/60">
+        <div class="flex items-center gap-3">
+          <span class="mu-cond text-[13px] text-white">{{ g.away_team_abbr }} @ {{ g.home_team_abbr }}</span>
+          <span class="text-xs text-chrome-400">{{ g.venue_name or '—' }}</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-[10px] mu-mono px-1.5 py-0.5 rounded {{ pf_class }}">Park {{ '%.2f' % pf }}</span>
+          {% if g.status and g.status != 'Scheduled' %}
+            <span class="text-[10px] mu-mono px-1.5 py-0.5 rounded bg-chrome-700/60 text-chrome-300">{{ g.status }}</span>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Two-pitcher strip -->
+      <div class="grid grid-cols-1 md:grid-cols-2 border-b border-chrome-700/60">
+        {% for side_key, side in [('away', g.away), ('home', g.home)] %}
+        {% set sp = side.starter %}
+        <div class="p-3 {% if side_key == 'away' %}md:border-r border-chrome-700/60{% endif %}">
+          <div class="text-[10px] mu-cond text-chrome-500 mb-1">{{ side_key }} starter</div>
+          {% if sp %}
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-semibold text-white">{{ sp.name }}</span>
+              {% set hand_cls = 'h-l' if sp.throws == 'L' else ('h-r' if sp.throws == 'R' else 'h-na') %}
+              <span class="text-[9px] mu-mono px-1.5 py-0.5 rounded {{ hand_cls }}">{{ sp.throws or '?' }}HP</span>
+            </div>
+            <div class="mt-2 grid grid-cols-5 gap-2 text-center">
+              {% macro stat(label, val) -%}
+                <div>
+                  <div class="text-[9px] mu-cond text-chrome-500">{{ label }}</div>
+                  <div class="text-xs mu-mono text-chrome-200">{{ val if val is not none else '—' }}</div>
+                </div>
+              {%- endmacro %}
+              {{ stat('FIP', sp.fip) }}
+              {{ stat('K%',  (sp.k_pct * 100) | round(1) ~ '%' if sp.k_pct is not none else None) }}
+              {{ stat('BB%', (sp.bb_pct * 100) | round(1) ~ '%' if sp.bb_pct is not none else None) }}
+              {{ stat('HR/9', sp.hr9) }}
+              {{ stat('BF', sp.batters_faced if sp.batters_faced else None) }}
+            </div>
+            <div class="mt-2 flex items-center justify-between text-[10px] mu-mono text-chrome-500">
+              <span>vs LHB OPS: <span class="text-chrome-300">{{ sp.vs_lhb_ops if sp.vs_lhb_ops is not none else '—' }}</span></span>
+              <span>vs RHB OPS: <span class="text-chrome-300">{{ sp.vs_rhb_ops if sp.vs_rhb_ops is not none else '—' }}</span></span>
+            </div>
+          {% else %}
+            <div class="text-sm text-chrome-500">No starter announced yet.</div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+
+      <!-- Two-lineup grid -->
+      <div class="grid grid-cols-1 md:grid-cols-2">
+        {% for side_key, side, vs_sp in [('AWAY lineup vs ' ~ (g.home.starter.name if g.home.starter else 'TBD'), g.away, g.home.starter),
+                                          ('HOME lineup vs ' ~ (g.away.starter.name if g.away.starter else 'TBD'), g.home, g.away.starter)] %}
+        <div class="{% if loop.first %}md:border-r border-chrome-700/60{% endif %} overflow-x-auto">
+          <div class="px-3 py-2 text-[10px] mu-cond text-chrome-500 border-b border-chrome-700/60 bg-chrome-900/30">{{ side_key }}</div>
+          {% if not side.batters %}
+            <div class="p-5 text-center text-xs text-chrome-500">Lineup not posted yet.</div>
+          {% else %}
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="text-chrome-500 mu-cond text-[9px]">
+                <th class="text-left  px-3 py-1.5 font-normal">Batter</th>
+                <th class="text-right px-2 py-1.5 font-normal">PA</th>
+                <th class="text-right px-2 py-1.5 font-normal">AVG</th>
+                <th class="text-right px-2 py-1.5 font-normal">OPS</th>
+                <th class="text-right px-2 py-1.5 font-normal">Hit</th>
+                <th class="text-right px-2 py-1.5 font-normal">HR</th>
+                <th class="text-right px-2 py-1.5 font-normal">TB</th>
+                <th class="text-right px-3 py-1.5 font-normal">K</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for b in side.batters %}
+              {% set hand_label = (b.bats_raw ~ '→' ~ b.bats) if b.is_switch else (b.bats or '?') %}
+              {% set hand_cls = 'h-s' if b.is_switch else ('h-l' if b.bats == 'L' else ('h-r' if b.bats == 'R' else 'h-na')) %}
+              <tr class="border-t border-chrome-700/40 hover:bg-chrome-700/20">
+                <td class="px-3 py-1.5">
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-chrome-500 mu-mono text-[10px] w-3">{{ b.order }}</span>
+                    <span class="text-chrome-200 font-medium truncate max-w-[140px]" title="{{ b.name }}">{{ b.name }}</span>
+                    <span class="text-[9px] mu-mono px-1 py-0.5 rounded {{ hand_cls }}">{{ hand_label }}HB</span>
+                    {% if b.position %}<span class="text-[9px] text-chrome-500">{{ b.position }}</span>{% endif %}
+                  </div>
+                </td>
+                <td class="px-2 py-1.5 text-right mu-mono text-chrome-300">{{ b.season_pa or '—' }}</td>
+                <td class="px-2 py-1.5 text-right mu-mono text-chrome-300">{{ '%.3f' % b.season_avg if b.season_avg is not none else '—' }}</td>
+                <td class="px-2 py-1.5 text-right mu-mono text-chrome-300">{{ '%.3f' % b.season_ops if b.season_ops is not none else '—' }}</td>
+                {% for key in ['hit', 'hr', 'tb', 'k'] %}
+                {% set v = b[key] %}
+                {% if v is none %}
+                  <td class="px-2 py-1.5 text-right s-na">—</td>
+                {% else %}
+                  {% set cls = 's-elite' if v >= 7.0 else ('s-good' if v >= 5.5 else ('s-avg' if v >= 4.5 else ('s-below' if v >= 3.0 else 's-poor'))) %}
+                  {% set col = '#22c55e' if v >= 7.0 else ('#86efac' if v >= 5.5 else ('#94a3b8' if v >= 4.5 else ('#fca5a5' if v >= 3.0 else '#ef4444'))) %}
+                  <td class="px-2 py-1.5">
+                    <div class="score-cell">
+                      <div class="score-bar-bg"><div class="score-bar-fl" style="width: {{ (v * 10) | round(0) }}%; background: {{ col }};"></div></div>
+                      <span class="score-num {{ cls }}">{{ '%.1f' % v }}</span>
+                    </div>
+                  </td>
+                {% endif %}
+                {% endfor %}
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% endif %}
+</section>
+{% endblock %}
