@@ -176,8 +176,8 @@
                 <td class="px-2 py-1.5 text-right mu-mono text-chrome-300">{{ '%.3f' % b.season_avg if b.season_avg is not none else '—' }}</td>
                 <td class="px-2 py-1.5 text-right mu-mono text-chrome-300">{{ '%.3f' % b.season_ops if b.season_ops is not none else '—' }}</td>
                 {% for key in ['hit', 'hr', 'tb', 'k'] %}
-                {% set v = b[key] %}
-                {% set p = b[key ~ '_prob'] %}
+                {% set v = b.get(key) %}
+                {% set p = b.get(key ~ '_prob') %}
                 {% if v is none %}
                   <td class="px-2 py-1.5 text-right s-na">—</td>
                 {% else %}

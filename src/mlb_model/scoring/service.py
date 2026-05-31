@@ -123,14 +123,31 @@ def _cache_path(target: date_cls) -> Path:
 
 
 def _load_cached(target: date_cls) -> list[dict] | None:
+    """Read a cached matchups list, busting it if the shape is stale.
+
+    We probe the first batter row for ``hit_prob`` -- that key was
+    added when isotonic calibrators landed (v1.4.0). Older caches
+    written by v1.2-v1.3 don't have it, so we treat them as invalid
+    rather than letting the template KeyError later.
+    """
     import json
     path = _cache_path(target)
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    # Schema-version probe
+    for game in data:
+        for side in ("away", "home"):
+            batters = (game.get(side) or {}).get("batters") or []
+            if batters:
+                if "hit_prob" not in batters[0]:
+                    log.info("matchups.cache.stale_shape", path=str(path))
+                    return None
+                return data
+    return data
 
 
 def _save_cache(target: date_cls, rows: list[dict]) -> None:
