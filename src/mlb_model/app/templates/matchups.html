@@ -177,15 +177,20 @@
                 <td class="px-2 py-1.5 text-right mu-mono text-chrome-300">{{ '%.3f' % b.season_ops if b.season_ops is not none else '—' }}</td>
                 {% for key in ['hit', 'hr', 'tb', 'k'] %}
                 {% set v = b[key] %}
+                {% set p = b[key ~ '_prob'] %}
                 {% if v is none %}
                   <td class="px-2 py-1.5 text-right s-na">—</td>
                 {% else %}
                   {% set cls = 's-elite' if v >= 7.0 else ('s-good' if v >= 5.5 else ('s-avg' if v >= 4.5 else ('s-below' if v >= 3.0 else 's-poor'))) %}
                   {% set col = '#22c55e' if v >= 7.0 else ('#86efac' if v >= 5.5 else ('#94a3b8' if v >= 4.5 else ('#fca5a5' if v >= 3.0 else '#ef4444'))) %}
+                  {%- if p is not none -%}
+                    {%- set american = ('-' ~ (p / (1 - p) * 100) | round(0) | int) if p >= 0.5 else ('+' ~ ((1 - p) / p * 100) | round(0) | int) -%}
+                  {%- else -%}{%- set american = '' -%}{%- endif -%}
                   <td class="px-2 py-1.5">
-                    <div class="score-cell">
+                    <div class="score-cell" {% if p is not none %}title="Calibrated probability: {{ (p * 100) | round(1) }}%  |  fair price: {{ american }}"{% endif %}>
                       <div class="score-bar-bg"><div class="score-bar-fl" style="width: {{ (v * 10) | round(0) }}%; background: {{ col }};"></div></div>
                       <span class="score-num {{ cls }}">{{ '%.1f' % v }}</span>
+                      {% if p is not none %}<span class="mu-mono text-[9px] text-chrome-500 ml-1">{{ (p * 100) | round(0) | int }}%</span>{% endif %}
                     </div>
                   </td>
                 {% endif %}

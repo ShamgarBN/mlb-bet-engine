@@ -137,12 +137,12 @@ app = BUNDLE(
     name="MLB Forecast.app",
     icon=str(PROJECT_ROOT / "packaging" / "MLBForecast.icns"),
     bundle_identifier="com.mlbforecast.app",
-    version="1.3.0",
+    version="1.4.0",
     info_plist={
         "CFBundleDisplayName": "MLB Forecast",
         "CFBundleName": "MLB Forecast",
-        "CFBundleShortVersionString": "1.3.0",
-        "CFBundleVersion": "1.3.0",
+        "CFBundleShortVersionString": "1.4.0",
+        "CFBundleVersion": "1.4.0",
         # Keep the app out of the Dock's "Recent" list spam; user can
         # still cmd-tab to it. The window is opened by pywebview.
         "LSBackgroundOnly": False,

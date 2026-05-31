@@ -30,6 +30,52 @@ from mlb_model.scoring.data import (
 )
 from mlb_model.scoring.hitter import score_matchup
 
+# ---------------------------------------------------------------------------
+# Score-to-probability calibrators (fit on 2021-2025 backtest)
+# ---------------------------------------------------------------------------
+
+_CALIBRATOR_CACHE: dict[str, object] = {}
+
+
+def _load_calibrators() -> dict[str, object]:
+    """Lazy-load the 4 isotonic calibrators (one per market).
+
+    Returns a dict ``{market_short: sklearn IsotonicRegression}`` or an empty
+    dict if the joblibs aren't present (older installs without backtest).
+    """
+    if _CALIBRATOR_CACHE:
+        return _CALIBRATOR_CACHE
+    import joblib
+    for market in ("hit", "hr", "tb", "k"):
+        path = settings.model_dir / f"hitter_calibrator_{market}.joblib"
+        if path.exists():
+            try:
+                state = joblib.load(path)
+                _CALIBRATOR_CACHE[market] = state["model"]
+            except Exception:  # noqa: BLE001
+                log.exception("hitter_calibrator.load_failed", market=market)
+    return _CALIBRATOR_CACHE
+
+
+def calibrated_probs(scores: dict[str, float | None]) -> dict[str, float | None]:
+    """Map ``{"hit": 6.8, "hr": 5.2, ...}`` -> calibrated probabilities.
+
+    Returns the same shape with ``None`` when a score is missing or when
+    the corresponding calibrator isn't installed.
+    """
+    cals = _load_calibrators()
+    out: dict[str, float | None] = {}
+    for market, score in scores.items():
+        cal = cals.get(market)
+        if score is None or cal is None:
+            out[market] = None
+            continue
+        try:
+            out[market] = float(cal.predict([float(score)])[0])
+        except Exception:  # noqa: BLE001
+            out[market] = None
+    return out
+
 log = get_logger("scoring.service")
 
 CACHE_DIR = settings.cache_dir / "matchups"
@@ -219,6 +265,12 @@ def get_matchups_for_date(
                 )
                 bi = batter_inputs_for(brow, bat.bats, opp_starter_throws)
                 s = score_matchup(bi, opp_pi, park_factor=pf)
+                # Calibrated probabilities (None when calibrator missing or
+                # score missing). These are directly comparable to the
+                # de-vigged book probability for prop bets.
+                probs = calibrated_probs({
+                    "hit": s.hit, "hr": s.hr, "tb": s.total_bases, "k": s.strikeout,
+                })
                 batter_rows.append({
                     "order": bat.batting_order,
                     "name": bat.full_name,
@@ -238,6 +290,9 @@ def get_matchups_for_date(
                     "split_pa": bi.split_pa,
                     "hit": s.hit, "hr": s.hr,
                     "tb": s.total_bases, "k": s.strikeout,
+                    # Calibrated probabilities (0..1) per market
+                    "hit_prob": probs["hit"], "hr_prob": probs["hr"],
+                    "tb_prob":  probs["tb"],  "k_prob":  probs["k"],
                 })
 
             return {
