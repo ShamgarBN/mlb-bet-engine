@@ -137,12 +137,51 @@ def normalize_schedule(payload: dict[str, Any]) -> pd.DataFrame:
 
 
 def fetch_boxscore(game_pk: int) -> dict[str, Any]:
-    """Pull the full boxscore payload for one game."""
+    """Pull the full boxscore payload for one game.
+
+    Augmented with per-pitcher ``battersFaced`` from the raw boxscore
+    endpoint -- python-statsapi's simplified wrapper drops that field but
+    we need it for accurate K% / BB% rate calculations downstream.
+    """
     try:
-        return statsapi.boxscore_data(int(game_pk))
+        bx = statsapi.boxscore_data(int(game_pk))
     except Exception:
         log.exception("statsapi.fetch_boxscore.failed", game_pk=int(game_pk))
         return {}
+    bf_map = _fetch_pitcher_bf(int(game_pk))
+    if bf_map:
+        for side_key in ("homePitchers", "awayPitchers"):
+            for p in bx.get(side_key, []) or []:
+                pid = p.get("personId")
+                if pid and int(pid) in bf_map:
+                    p["bf"] = bf_map[int(pid)]
+    return bx
+
+
+def _fetch_pitcher_bf(game_pk: int) -> dict[int, int]:
+    """Map ``pitcher_id -> battersFaced`` from the raw boxscore endpoint.
+
+    Returns an empty dict on any error so callers degrade to the
+    ``ip * 4.3`` fallback rather than crashing the boxscore ingest.
+    """
+    try:
+        raw = statsapi.get("game_boxscore", {"gamePk": int(game_pk)})
+    except Exception:
+        log.exception("statsapi.fetch_pitcher_bf.failed", game_pk=int(game_pk))
+        return {}
+    out: dict[int, int] = {}
+    for side in ("home", "away"):
+        players = (raw.get("teams") or {}).get(side, {}).get("players", {}) or {}
+        for _pid, p in players.items():
+            pit = (p.get("stats") or {}).get("pitching") or {}
+            bf = pit.get("battersFaced")
+            person_id = (p.get("person") or {}).get("id")
+            if bf is not None and person_id is not None:
+                try:
+                    out[int(person_id)] = int(bf)
+                except (TypeError, ValueError):
+                    continue
+    return out
 
 
 def _safe_int(v: Any) -> int | None:
@@ -264,7 +303,7 @@ def normalize_pitcher_stats(game_pk: int, payload: dict[str, Any]) -> pd.DataFra
                 "team_id": int(team_id),
                 "is_starter": i == 0,
                 "innings_pitched": _ip_to_float(p.get("ip")),
-                "batters_faced": None,
+                "batters_faced": _safe_int(p.get("bf")),
                 "hits": _safe_int(p.get("h")),
                 "runs": _safe_int(p.get("r")),
                 "earned_runs": _safe_int(p.get("er")),
