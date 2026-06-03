@@ -39,6 +39,19 @@ backtest_2026 = PROJECT_ROOT / "logs" / "backtest_2026.csv"
 if backtest_2026.exists():
     datas.append((str(backtest_2026), "logs"))
 
+# Hitter-prop backtest results -- the 5-season as-of-graded rows. We
+# ship two pieces:
+#   * the raw backtest parquet (1.4 MB) so the user can re-run
+#     ``mlb-model props-backfill`` if they wipe the journal
+#   * a pre-populated prop journal (~4 MB) so /season's "By tier" cards
+#     show 591k graded rows on day one instead of being empty
+prop_backtest = PROJECT_ROOT / "logs" / "hitter_backtest_2021_2025_v2.parquet"
+if prop_backtest.exists():
+    datas.append((str(prop_backtest), "logs"))
+prop_journal = PROJECT_ROOT / "data" / "journal" / "prop_predictions.parquet"
+if prop_journal.exists():
+    datas.append((str(prop_journal), "data/journal"))
+
 # --- Hidden imports ---------------------------------------------------------
 # PyInstaller's static analyzer misses several things:
 #   1. anything imported via a string in uvicorn / FastAPI / pywebview
@@ -137,12 +150,12 @@ app = BUNDLE(
     name="MLB Forecast.app",
     icon=str(PROJECT_ROOT / "packaging" / "MLBForecast.icns"),
     bundle_identifier="com.mlbforecast.app",
-    version="1.4.1",
+    version="1.5.0",
     info_plist={
         "CFBundleDisplayName": "MLB Forecast",
         "CFBundleName": "MLB Forecast",
-        "CFBundleShortVersionString": "1.4.1",
-        "CFBundleVersion": "1.4.1",
+        "CFBundleShortVersionString": "1.5.0",
+        "CFBundleVersion": "1.5.0",
         # Keep the app out of the Dock's "Recent" list spam; user can
         # still cmd-tab to it. The window is opened by pywebview.
         "LSBackgroundOnly": False,

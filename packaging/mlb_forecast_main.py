@@ -76,19 +76,31 @@ def _prepare_app_support_root() -> Path:
     if src_raw.exists() and not dst_raw.exists():
         shutil.copytree(src_raw, dst_raw)
 
-    # Backtest CSVs power the /performance page. Copy any that ship in
-    # the bundle but aren't already present in the support root, so a
-    # fresh install shows results instead of an empty "no CSVs" state.
-    # (Copy per-file rather than the whole dir so we never clobber the
-    # live mlb_model.log the running app writes to.)
+    # Backtest CSVs + backtest parquet power /performance and the
+    # props-backfill command. Copy each file individually so we never
+    # clobber the live mlb_model.log the running app writes to.
     src_logs = bundle / "logs"
     dst_logs = support / "logs"
     if src_logs.exists():
         dst_logs.mkdir(parents=True, exist_ok=True)
-        for csv in src_logs.glob("*.csv"):
-            target = dst_logs / csv.name
+        for src in src_logs.glob("*.csv"):
+            target = dst_logs / src.name
             if not target.exists():
-                shutil.copy2(csv, target)
+                shutil.copy2(src, target)
+        for src in src_logs.glob("*.parquet"):
+            target = dst_logs / src.name
+            if not target.exists():
+                shutil.copy2(src, target)
+
+    # Pre-populated hitter-prop journal so /season shows tier success
+    # rates from day one (~591k graded rows over 5 seasons). Only seed
+    # when the support root doesn't already have one -- never overwrite
+    # the user's accumulated history.
+    src_journal = bundle / "data" / "journal" / "prop_predictions.parquet"
+    dst_journal = support / "data" / "journal" / "prop_predictions.parquet"
+    if src_journal.exists() and not dst_journal.exists():
+        dst_journal.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_journal, dst_journal)
 
     return support
 

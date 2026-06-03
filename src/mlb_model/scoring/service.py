@@ -289,6 +289,7 @@ def get_matchups_for_date(
                     "hit": s.hit, "hr": s.hr, "tb": s.total_bases, "k": s.strikeout,
                 })
                 batter_rows.append({
+                    "player_id": bat.player_id,
                     "order": bat.batting_order,
                     "name": bat.full_name,
                     "bats_raw": bat.bats_raw,
@@ -349,4 +350,12 @@ def get_matchups_for_date(
         out.append(row)
 
     _save_cache(target, out)
+    # Append to the prop-prediction journal so the /season page can
+    # show per-tier success rates over time. Failure here is bookkeeping
+    # only -- never break the matchups response.
+    try:
+        from mlb_model.journal.props import record_matchups
+        record_matchups(out)
+    except Exception:  # noqa: BLE001
+        log.exception("matchups.props.journal_failed", target=target)
     return out

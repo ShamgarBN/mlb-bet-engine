@@ -343,51 +343,128 @@
     </div>
     {% endif %}
 
-    <!-- Per-tier breakdown -->
+    <!-- ============================================================
+         Per-tier breakdown — game markets (ML / RL / OU)
+         Re-arranged from the original flat table into per-market cards
+         so each market's tier progression reads top-to-bottom at a glance.
+         ============================================================ -->
+    {% macro tier_color(tier) -%}
+      {%- if tier == 'premium' -%}bg-brand-500
+      {%- elif tier == 'strong' -%}bg-brand-400
+      {%- elif tier == 'edge' -%}bg-amber-400
+      {%- elif tier == 'lean' -%}bg-amber-500/70
+      {%- else -%}bg-chrome-600
+      {%- endif -%}
+    {%- endmacro %}
+    {% macro tier_pill(tier) -%}
+      {%- if tier == 'premium' -%}text-brand-300 bg-brand-600/15 ring-brand-500/40
+      {%- elif tier == 'strong' -%}text-brand-300 bg-brand-700/15 ring-brand-700/40
+      {%- elif tier == 'edge' -%}text-amber-300 bg-amber-600/15 ring-amber-500/40
+      {%- elif tier == 'lean' -%}text-amber-200 bg-amber-700/15 ring-amber-700/40
+      {%- else -%}text-chrome-400 bg-chrome-700/40 ring-chrome-600/40
+      {%- endif -%}
+    {%- endmacro %}
+
     {% if tier_breakdown %}
-    <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 overflow-x-auto">
-      <div class="flex items-center justify-between p-5 pb-3">
-        <h2 class="text-sm font-semibold text-white uppercase tracking-widest">By confidence tier</h2>
-        <span class="text-[10px] uppercase tracking-wider text-chrome-500">
-          higher tier = higher edge = bigger expected win rate
-        </span>
+    <div class="space-y-3">
+      <div class="flex items-baseline justify-between">
+        <h2 class="text-sm font-semibold text-white uppercase tracking-widest">Game-market win rate by tier</h2>
+        <span class="text-[10px] uppercase tracking-wider text-chrome-500">moneyline · runline · over/under</span>
       </div>
-      <table class="w-full text-sm">
-        <thead class="text-[11px] uppercase tracking-wider text-chrome-500 bg-chrome-900/40">
-          <tr>
-            <th class="text-left font-normal py-2 px-4">Market</th>
-            <th class="text-left font-normal py-2 px-4">Tier</th>
-            <th class="text-right font-normal py-2 px-4">N</th>
-            <th class="text-right font-normal py-2 px-4">W-L-P</th>
-            <th class="text-right font-normal py-2 px-4">Win %</th>
-            <th class="text-right font-normal py-2 px-4">Units</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for market, rows in tier_breakdown.items() %}
-            {% for r in rows %}
-              <tr class="border-t border-chrome-800 hover:bg-chrome-700/30">
-                <td class="px-4 py-1.5 text-chrome-300 capitalize">{{ market }}</td>
-                <td class="px-4 py-1.5 text-white capitalize">{{ r.tier or '—' }}</td>
-                <td class="px-4 py-1.5 text-right font-mono">{{ r.n | int }}</td>
-                <td class="px-4 py-1.5 text-right font-mono text-chrome-300">
-                  {{ r.wins | int }}-{{ r.losses | int }}{% if r.pushes %}-{{ r.pushes | int }}{% endif %}
-                </td>
-                <td class="px-4 py-1.5 text-right font-mono
-                           {{ 'text-brand-300' if (r.win_rate or 0) > 0.55 else 'text-chrome-200' }}">
-                  {% if r.win_rate is not none and r.win_rate == r.win_rate %}
-                    {{ (r.win_rate * 100) | round(1) }}%
-                  {% else %}—{% endif %}
-                </td>
-                <td class="px-4 py-1.5 text-right font-mono
-                           {{ 'text-brand-300' if (r.roi or 0) > 0 else 'text-rose-300' if (r.roi or 0) < 0 else 'text-chrome-300' }}">
-                  {{ '%+.2f' % (r.roi or 0) }}
-                </td>
-              </tr>
+      <div class="grid gap-3 md:grid-cols-3">
+        {% for market, rows in tier_breakdown.items() %}
+        <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-4">
+          <div class="flex items-baseline justify-between mb-3">
+            <div class="text-[11px] uppercase tracking-widest text-chrome-500">{{ market }}</div>
+            <div class="mu-mono text-[10px] text-chrome-400">
+              {% set total = rows | sum(attribute='n') %}n = {{ total | int }}
+            </div>
+          </div>
+          {% set tier_order = ['premium','strong','edge','lean','pass'] %}
+          {% set rows_by_tier = {} %}
+          {% for r in rows %}{% if rows_by_tier.update({(r.tier or 'pass'): r}) %}{% endif %}{% endfor %}
+          <div class="space-y-2">
+            {% for tier in tier_order %}
+              {% set r = rows_by_tier.get(tier) %}
+              <div class="flex items-center gap-2">
+                <span class="inline-flex w-16 text-[10px] uppercase tracking-wider mu-cond px-1.5 py-0.5 rounded ring-1 {{ tier_pill(tier) }} text-center justify-center">{{ tier }}</span>
+                {% if r and r.n %}
+                  {% set wr = r.win_rate if r.win_rate is not none and r.win_rate == r.win_rate else None %}
+                  <div class="flex-1 h-2 bg-chrome-900/60 rounded-full overflow-hidden">
+                    {% if wr is not none %}
+                      <div class="h-full {{ tier_color(tier) }}" style="width: {{ (wr * 100) | round(0) }}%"></div>
+                    {% endif %}
+                  </div>
+                  <span class="mu-mono text-xs text-chrome-200 w-12 text-right">
+                    {% if wr is not none %}{{ (wr * 100) | round(1) }}%{% else %}—{% endif %}
+                  </span>
+                  <span class="mu-mono text-[10px] text-chrome-500 w-14 text-right">{{ r.n | int }} picks</span>
+                {% else %}
+                  <div class="flex-1 h-2 bg-chrome-900/30 rounded-full"></div>
+                  <span class="mu-mono text-xs text-chrome-600 w-12 text-right">—</span>
+                  <span class="mu-mono text-[10px] text-chrome-700 w-14 text-right">0 picks</span>
+                {% endif %}
+              </div>
             {% endfor %}
-          {% endfor %}
-        </tbody>
-      </table>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- ============================================================
+         Per-tier breakdown — hitter props (hit / HR / TB / K)
+         Same layout as game markets. Recorded on each Matchups visit,
+         graded against batter_game_stats after games settle.
+         ============================================================ -->
+    {% if prop_breakdown %}
+    <div class="space-y-3">
+      <div class="flex items-baseline justify-between">
+        <h2 class="text-sm font-semibold text-white uppercase tracking-widest">Hitter-prop win rate by tier</h2>
+        <span class="text-[10px] uppercase tracking-wider text-chrome-500">tier = edge above league baseline (in pp)</span>
+      </div>
+      <div class="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {% for label, rows in prop_breakdown.items() %}
+        <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-4">
+          <div class="flex items-baseline justify-between mb-3">
+            <div class="text-[11px] uppercase tracking-widest text-chrome-500">{{ label }}</div>
+            <div class="mu-mono text-[10px] text-chrome-400">
+              {% set settled_total = rows | sum(attribute='settled') %}
+              {% set total_n = rows | sum(attribute='n') %}
+              graded {{ settled_total | int }} / {{ total_n | int }}
+            </div>
+          </div>
+          <div class="space-y-2">
+            {% for r in rows %}
+              <div class="flex items-center gap-2">
+                <span class="inline-flex w-16 text-[10px] uppercase tracking-wider mu-cond px-1.5 py-0.5 rounded ring-1 {{ tier_pill(r.tier) }} text-center justify-center">{{ r.tier }}</span>
+                {% if r.settled %}
+                  {% set wr = r.win_rate if r.win_rate is not none else None %}
+                  <div class="flex-1 h-2 bg-chrome-900/60 rounded-full overflow-hidden">
+                    {% if wr is not none %}
+                      <div class="h-full {{ tier_color(r.tier) }}" style="width: {{ (wr * 100) | round(0) }}%"></div>
+                    {% endif %}
+                  </div>
+                  <span class="mu-mono text-xs text-chrome-200 w-12 text-right">
+                    {% if wr is not none %}{{ (wr * 100) | round(1) }}%{% else %}—{% endif %}
+                  </span>
+                  <span class="mu-mono text-[10px] text-chrome-500 w-14 text-right" title="settled / total">{{ r.settled | int }}/{{ r.n | int }}</span>
+                {% else %}
+                  <div class="flex-1 h-2 bg-chrome-900/30 rounded-full"></div>
+                  <span class="mu-mono text-xs text-chrome-600 w-12 text-right">—</span>
+                  <span class="mu-mono text-[10px] text-chrome-700 w-14 text-right" title="settled / total">0/{{ r.n | int }}</span>
+                {% endif %}
+              </div>
+            {% endfor %}
+          </div>
+          <div class="mt-3 text-[10px] mu-mono text-chrome-500">
+            baseline {{ (rows[0].baseline * 100) | round(1) }}% — bars cross the baseline at
+            <span class="text-chrome-400">{{ (rows[0].baseline * 100) | round(0) }}%</span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
     </div>
     {% endif %}
 
