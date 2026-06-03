@@ -290,6 +290,7 @@ def season_view(
             "calibration": data["calibration"],
             "rolling": data["rolling"],
             "tier_breakdown": data["tier_breakdown"],
+            "prop_breakdown": data.get("prop_breakdown", {}),
             "recent_results": data["recent_results"],
             "journal_size": data["journal_size"],
             "eos_report": data.get("eos_report"),

@@ -86,6 +86,9 @@ logs/*
 # source of truth for the /performance page and get bundled into the .app.
 !logs/backtest_v4.csv
 !logs/backtest_2026.csv
+# Hitter-prop 5-season backtest parquet -- ships in the bundle and
+# seeds the /season By-tier cards. Small (1.4 MB) and stable.
+!logs/hitter_backtest_2021_2025_v2.parquet
 
 # --- End-of-season reports (generated annually) ---
 reports/

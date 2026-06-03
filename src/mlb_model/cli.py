@@ -782,6 +782,26 @@ def journal_grade_cmd(
     console.print(table)
 
 
+@app.command("props-backfill")
+def props_backfill_cmd(
+    path: Annotated[
+        str, typer.Option(help="Backtest parquet to import")
+    ] = "logs/hitter_backtest_2021_2025_v2.parquet",
+) -> None:
+    """Seed the hitter-prop journal from the as-of backtest output.
+
+    Lets the /season page show per-tier success rates over 5 seasons of
+    historical games without waiting for the Matchups page to accumulate
+    enough live visits.
+    """
+    configure_logging()
+    from mlb_model.journal.props import backfill_from_backtest, grade_props
+
+    n = backfill_from_backtest(path)
+    grade_props()  # no-op for already-settled rows but cheap to run
+    console.print(f"[green]Backfilled {n:,} hitter-prop rows from {path}[/green]")
+
+
 @app.command()
 def serve(
     host: Annotated[str, typer.Option(help="Bind address (local-only by default)")] = "127.0.0.1",

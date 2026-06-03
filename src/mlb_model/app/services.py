@@ -769,6 +769,16 @@ def season_performance(season: int | None = None) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             eos_links = None
 
+    # Hitter-prop tier breakdown -- grade any newly-settled rows first
+    # so the page always reflects the freshest results.
+    prop_breakdown: dict[str, list[dict]] = {}
+    try:
+        from mlb_model.journal import props as _props
+        _props.grade_props()
+        prop_breakdown = _props.tier_breakdown(season=season)
+    except Exception:  # noqa: BLE001
+        log.exception("season.prop_breakdown.failed")
+
     return {
         "season": season,
         "available_seasons": available_seasons,
@@ -776,6 +786,7 @@ def season_performance(season: int | None = None) -> dict[str, Any]:
         "calibration": calibration,
         "rolling": rolling,
         "tier_breakdown": tier_breakdown,
+        "prop_breakdown": prop_breakdown,
         "recent_results": recent_results,
         "journal_size": int(len(journal)),
         "eos_report": eos_links,
