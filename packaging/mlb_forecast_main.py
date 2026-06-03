@@ -150,7 +150,34 @@ def _wire_settings(support_root: Path) -> None:
     os.environ.setdefault("MLB_LOGS_DIR", str(support_root / "logs"))
 
 
+def _install_hard_exit_atexit() -> None:
+    """Bypass __cxa_finalize on shutdown -- catches Cmd-Q too.
+
+    The v1.1.2 fix put ``os._exit(0)`` in ``main()``'s ``finally:`` block,
+    which works for the window-close path because pywebview's
+    ``webview.start()`` returns to Python on close. But ``Cmd-Q`` dispatches
+    ``-[NSApplication terminate:]`` from AppKit's event loop -- AppKit
+    calls libc ``exit()`` directly, never returning to Python, so the
+    ``finally:`` never runs.
+
+    ``exit()`` runs registered C atexit handlers LIFO. Python's interpreter
+    cleanup is one of those (Py_FinalizeEx), and Py_FinalizeEx in turn
+    runs Python-module ``atexit`` handlers. So a handler registered here
+    fires BEFORE libc's exit continues into ``__cxa_finalize``, which is
+    where DuckDB's C++ destructor crashes when calling back into the
+    half-torn-down Python interpreter.
+
+    ``os._exit(0)`` is a direct ``_exit(2)`` syscall -- it bypasses all
+    remaining cleanup. Safe here: every write in the app (warehouse,
+    journal, picks log, predictions cache) is synchronous-to-disk before
+    its handler returns, and loguru flushes per write.
+    """
+    import atexit
+    atexit.register(lambda: os._exit(0))
+
+
 def main() -> None:
+    _install_hard_exit_atexit()
     support_root = _prepare_app_support_root()
     _load_env_file(support_root)
     _wire_settings(support_root)
