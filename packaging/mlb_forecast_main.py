@@ -150,34 +150,64 @@ def _wire_settings(support_root: Path) -> None:
     os.environ.setdefault("MLB_LOGS_DIR", str(support_root / "logs"))
 
 
-def _install_hard_exit_atexit() -> None:
-    """Bypass __cxa_finalize on shutdown -- catches Cmd-Q too.
+# Module-global to keep the Cocoa observer alive across the app's lifetime.
+# If we let pyobjc GC the wrapper, AppKit's notification dispatch crashes
+# trying to message a dead Python object during shutdown -- which is exactly
+# the problem we're trying to avoid.
+_QUIT_HOOK_KEEPALIVE: list = []
 
-    The v1.1.2 fix put ``os._exit(0)`` in ``main()``'s ``finally:`` block,
-    which works for the window-close path because pywebview's
-    ``webview.start()`` returns to Python on close. But ``Cmd-Q`` dispatches
-    ``-[NSApplication terminate:]`` from AppKit's event loop -- AppKit
-    calls libc ``exit()`` directly, never returning to Python, so the
-    ``finally:`` never runs.
 
-    ``exit()`` runs registered C atexit handlers LIFO. Python's interpreter
-    cleanup is one of those (Py_FinalizeEx), and Py_FinalizeEx in turn
-    runs Python-module ``atexit`` handlers. So a handler registered here
-    fires BEFORE libc's exit continues into ``__cxa_finalize``, which is
-    where DuckDB's C++ destructor crashes when calling back into the
-    half-torn-down Python interpreter.
+def _install_appkit_quit_hook() -> None:
+    """Intercept Cmd-Q BEFORE AppKit calls libc ``exit()``.
 
-    ``os._exit(0)`` is a direct ``_exit(2)`` syscall -- it bypasses all
-    remaining cleanup. Safe here: every write in the app (warehouse,
-    journal, picks log, predictions cache) is synchronous-to-disk before
-    its handler returns, and loguru flushes per write.
+    The v1.5.1 atexit hook didn't work. On macOS, ``__cxa_finalize_ranges``
+    walks ``atexit()`` handlers AND ``__cxa_atexit()`` C++ destructors in
+    a single combined LIFO list. DuckDB's C++ static destructor was
+    registered LATER than Python's ``Py_FinalizeEx`` libc-atexit (DuckDB
+    is loaded by the first matchups request, well after the interpreter
+    bootstraps). LIFO = DuckDB's destructor fires FIRST, calls
+    ``PyEval_SaveThread`` on a still-running interpreter from a wrong
+    thread state, NULL-derefs at 0xb0, SIGSEGV. Python's atexit module
+    never gets called.
+
+    Right intercept point: ``-[NSApplication terminate:]`` posts
+    ``NSApplicationWillTerminateNotification`` synchronously, then calls
+    ``exit()``. By observing that notification and calling ``os._exit(0)``
+    from the handler, we kill the process at the ``_exit(2)`` syscall --
+    AppKit never returns from the notification post, never reaches
+    ``exit()``, and ``__cxa_finalize`` never runs.
+
+    Safe: every disk write in the app (warehouse, parquet journal, picks
+    log, predictions cache) is synchronous-to-disk before its caller
+    returns; loguru flushes per write; uvicorn is already stopped by
+    pywebview's ``closed`` callback by the time terminate: fires.
     """
-    import atexit
-    atexit.register(lambda: os._exit(0))
+    try:
+        from AppKit import NSApplicationWillTerminateNotification
+        from Foundation import NSNotificationCenter, NSObject
+    except ImportError:
+        # Not on macOS, or pyobjc not present -- nothing to do.
+        return
+
+    class _QuitHook(NSObject):
+        # PyObjC maps Python method ``appWillTerminate_`` to ObjC selector
+        # ``appWillTerminate:``. The notification observer system messages
+        # this method with the NSNotification when terminate: is firing.
+        def appWillTerminate_(self, _notification):  # noqa: N802
+            os._exit(0)
+
+    hook = _QuitHook.alloc().init()
+    _QUIT_HOOK_KEEPALIVE.append(hook)
+    NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
+        hook,
+        b"appWillTerminate:",
+        NSApplicationWillTerminateNotification,
+        None,
+    )
 
 
 def main() -> None:
-    _install_hard_exit_atexit()
+    _install_appkit_quit_hook()
     support_root = _prepare_app_support_root()
     _load_env_file(support_root)
     _wire_settings(support_root)
