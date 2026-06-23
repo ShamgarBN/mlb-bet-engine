@@ -189,6 +189,10 @@ uv run mlb-model serve
 
 ## Desktop app
 
+> **Download:** grab the latest `MLB-Forecast-arm64.dmg` from the
+> [Releases page](https://github.com/ShamgarBN/mlb-bet-engine/releases/latest),
+> open it, and drag **MLB Forecast.app** to Applications. Apple Silicon only.
+
 Three ways to open the app, in order of "least friction":
 
 1. **Double-click `MLB Forecast.app`** in the repo root. macOS launches a
@@ -282,6 +286,42 @@ The tool is designed to be useful season after season. Three pieces:
    It's idempotent: subsequent Sundays in the off-season see the
    existing `summary.json` and skip.
 
+### Slumping-slugger tracker
+
+Find the season's big power bats (15+ HR) who have gone cold, and get a
+read on *why*. Cause is **verified against the official MLB transactions
+feed** — a player is only labelled `INJURY (verified)` (with IL type, start
+date, and the injury itself) or `EXTERNAL (verified)` (optioned / DFA /
+suspended) when MLB actually logged the move. Everyone else stays honestly
+`UNCLEAR`. Recent news (key-less Google News RSS, classified with
+name-proximity + negation guards) is shown as **supplementary context only**
+— it never drives the verdict.
+
+Available both in the desktop app (the **Sluggers** tab — percentage cards,
+a moving-percentage trend chart, and the verified-cause table with news
+links) and on the CLI:
+
+```bash
+# Share of players with 15+ HR, across three denominators; appends a
+# dated snapshot to data/processed/slugger_hr_pct_history.csv so the
+# percentage can be tracked as a moving number through the season.
+uv run mlb-model slugger percent --season 2026
+
+# The recorded series for one denominator (all_pa | has_hr | qualified).
+uv run mlb-model slugger history --season 2026 --denominator qualified
+
+# Sluggers in a 5+ game HR drought (counting only games they appeared in),
+# each with an IL-verified INJURY / EXTERNAL / UNCLEAR status + news context.
+uv run mlb-model slugger slumps --season 2026 --min-drought 5
+uv run mlb-model slugger slumps --season 2026 --csv-out reports/slumps.csv
+uv run mlb-model slugger slumps --season 2026 --no-news   # skip the news lookup
+```
+
+The engine lives in `mlb_model.analysis` — `slugger_slump` (analysis +
+plain dataclasses), `transactions` (IL/roster verification), and `news`
+(supplementary headlines). The web page is served from a dated cache
+(`data/cache/slugger/`); the Refresh button recomputes.
+
 ### Automated data refresh and self-improvement
 
 Two background jobs keep the app honest:
@@ -290,10 +330,11 @@ Two background jobs keep the app honest:
   scores so the picks log can grade itself, refreshes today's schedule /
   probable pitchers / weather (including a real **forecast-endpoint**
   pull for future games — historically we only had archive weather), and
-  invalidates the prediction cache. Footer state is honest: it shows
-  the last *fully successful* run, not just "we attempted something",
-  and turns amber/red when the data is stale or only partially synced.
-  On macOS, if today's slate contains a premium-tier pick the sync
+  invalidates the prediction cache, and records the day's 15+ HR share so
+  the Sluggers trend chart accumulates a point per day. Footer state is
+  honest: it shows the last *fully successful* run, not just "we attempted
+  something", and turns amber/red when the data is stale or only partially
+  synced. On macOS, if today's slate contains a premium-tier pick the sync
   emits a single Notification Center alert (deduped per day).
 - **Weekly retrain** (`mlb-model weekly-train`): on Sundays, archives the
   current model files, refits on a fresh 6-year window, and validates
