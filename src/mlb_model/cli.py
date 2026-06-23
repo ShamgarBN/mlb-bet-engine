@@ -26,6 +26,11 @@ from mlb_model.logging import configure_logging, get_logger
 app = typer.Typer(no_args_is_help=True, help="MLB prediction & betting model CLI")
 data_app = typer.Typer(no_args_is_help=True, help="Data ingestion commands")
 app.add_typer(data_app, name="data")
+slugger_app = typer.Typer(
+    no_args_is_help=True,
+    help="Track big HR hitters who have gone cold (slumping-slugger analysis)",
+)
+app.add_typer(slugger_app, name="slugger")
 
 console = Console()
 log = get_logger("cli")
@@ -851,6 +856,163 @@ def serve(
         reload=reload,
         access_log=False,
     )
+
+
+@slugger_app.command("percent")
+def slugger_percent(
+    season: Annotated[int, typer.Option(help="Season year")] = date_cls.today().year,
+    threshold: Annotated[int, typer.Option(help="HR threshold")] = 15,
+    track: Annotated[
+        bool, typer.Option(help="Append today's snapshot to the moving-history CSV")
+    ] = True,
+) -> None:
+    """Share of players at/above the HR threshold, across three denominators.
+
+    With --track (default) it appends today's snapshot so you can watch the
+    percentage move as the season progresses.
+    """
+    configure_logging()
+    from mlb_model.analysis import slugger_slump as ss
+
+    hitters = ss.fetch_season_hitting(season)
+    bd = ss.threshold_breakdown(hitters, season=season, threshold=threshold)
+
+    table = Table(title=f"{season}: players with {threshold}+ HR  (n = {bd.n_at_threshold})")
+    table.add_column("denominator")
+    table.add_column("count", justify="right")
+    table.add_column(f"{threshold}+ HR share", justify="right")
+    for share in bd.shares.values():
+        table.add_row(share.label, str(share.denom_count), f"{share.pct:.1f}%")
+    console.print(table)
+
+    if track:
+        path = ss.append_history(bd)
+        console.print(f"[green]Snapshot saved →[/green] {path}")
+
+
+@slugger_app.command("history")
+def slugger_history(
+    season: Annotated[int, typer.Option(help="Season year")] = date_cls.today().year,
+    threshold: Annotated[int, typer.Option(help="HR threshold")] = 15,
+    denominator: Annotated[
+        str, typer.Option(help="all_pa | has_hr | qualified")
+    ] = "qualified",
+) -> None:
+    """Print the recorded moving-percentage series for one denominator."""
+    configure_logging()
+    import csv as _csv
+
+    from mlb_model.analysis import slugger_slump as ss
+
+    if not ss.HISTORY_PATH.exists():
+        console.print("[yellow]No history yet. Run 'slugger percent' first.[/yellow]")
+        raise typer.Exit()
+
+    with ss.HISTORY_PATH.open(newline="") as fh:
+        rows = [
+            r for r in _csv.DictReader(fh)
+            if int(r["season"]) == season
+            and int(r["threshold"]) == threshold
+            and r["denominator"] == denominator
+        ]
+    if not rows:
+        console.print("[yellow]No matching snapshots recorded.[/yellow]")
+        raise typer.Exit()
+
+    table = Table(title=f"{season}: {threshold}+ HR share over time ({denominator})")
+    table.add_column("as of")
+    table.add_column("at threshold", justify="right")
+    table.add_column("denom", justify="right")
+    table.add_column("share", justify="right")
+    for r in sorted(rows, key=lambda x: x["as_of"]):
+        table.add_row(r["as_of"], r["n_at_threshold"], r["denom_count"], f"{float(r['pct']):.1f}%")
+    console.print(table)
+
+
+@slugger_app.command("slumps")
+def slugger_slumps(
+    season: Annotated[int, typer.Option(help="Season year")] = date_cls.today().year,
+    threshold: Annotated[int, typer.Option(help="HR threshold")] = 15,
+    min_drought: Annotated[
+        int, typer.Option(help="Flag players with this many+ HR-less games")
+    ] = 5,
+    no_news: Annotated[bool, typer.Option(help="Skip the live news lookup")] = False,
+    csv_out: Annotated[
+        str | None, typer.Option(help="Optional path to write the report as CSV")
+    ] = None,
+) -> None:
+    """Find threshold sluggers in a 5+ game HR drought and explain why.
+
+    Flags cold streaks (consecutive appeared games with no HR) and absences,
+    then verifies the cause against the MLB transactions feed: a player is
+    only labelled INJURY or EXTERNAL when MLB logged the IL stint / roster
+    move (with date + injury). Everyone else stays honestly UNCLEAR. Recent
+    news is shown as context only.
+    """
+    configure_logging()
+    from mlb_model.analysis import slugger_slump as ss
+
+    with console.status("Pulling season totals, game logs, and news…"):
+        flagged = ss.find_slumping_sluggers(
+            season, threshold=threshold, min_drought=min_drought, with_news=not no_news
+        )
+
+    if not flagged:
+        console.print(
+            f"[green]No {threshold}+ HR hitters are in a {min_drought}+ game drought today.[/green]"
+        )
+        raise typer.Exit()
+
+    _color = {
+        "INJURY (verified)": "red",
+        "EXTERNAL (verified)": "yellow",
+        "UNCLEAR": "chrome",
+    }
+    table = Table(
+        title=f"{season}: {threshold}+ HR sluggers gone cold ({len(flagged)} flagged)"
+    )
+    table.add_column("player")
+    table.add_column("HR", justify="right")
+    table.add_column("drought", justify="right")
+    table.add_column("last HR")
+    table.add_column("status")
+    table.add_column("detail", max_width=44)
+    for s in flagged:
+        drought_txt = "—" if s.is_absent and s.drought_games == 0 else f"{s.drought_games}G"
+        label = s.status_label
+        styled = f"[{_color.get(label, 'white')}]{label}[/]" if label != "UNCLEAR" else label
+        # The detail is the part of the advisory after the "LABEL — " prefix.
+        detail = s.advisory.split(" — ", 1)[-1] if " — " in s.advisory else s.advisory
+        table.add_row(
+            f"{s.name} ({s.team})" if s.team else s.name,
+            str(s.home_runs),
+            drought_txt,
+            s.last_hr_date.isoformat() if s.last_hr_date else "—",
+            styled,
+            detail,
+        )
+    console.print(table)
+
+    # Supporting news context (informational only — never drives the verdict).
+    if not no_news:
+        for s in flagged:
+            if s.news_headlines:
+                console.print(f"\n[bold]{s.name}[/bold] — recent news:")
+                for h in s.news_headlines:
+                    when = h.published.date().isoformat() if h.published else "?"
+                    console.print(f"  • [{when}] {h.title}")
+
+    if csv_out:
+        import csv as _csv
+
+        path = Path(csv_out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rows = [ss.status_to_row(s) for s in flagged]
+        with path.open("w", newline="") as fh:
+            w = _csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+            w.writeheader()
+            w.writerows(rows)
+        console.print(f"\n[green]Report written →[/green] {path}")
 
 
 def main() -> None:  # entry-point alias for [project.scripts]

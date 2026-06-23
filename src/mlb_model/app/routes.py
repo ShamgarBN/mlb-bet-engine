@@ -319,6 +319,43 @@ def season_report(season: int = Query(...)) -> Response:
     )
 
 
+@router.get("/slugger", response_class=HTMLResponse)
+def slugger_view(
+    request: Request,
+    season: int | None = Query(default=None),
+    refresh: int = Query(default=0),
+) -> HTMLResponse:
+    """Big HR hitters (15+) who have gone cold, with IL-verified cause.
+
+    The report is heavy (live season totals + per-player game logs and team
+    transactions), so it is served from a dated cache; the Refresh button
+    recomputes. Cause is only labelled INJURY / EXTERNAL when MLB logged the
+    move — otherwise it stays honestly UNCLEAR.
+    """
+    from mlb_model.app import slugger_service
+
+    season = season or date_cls.today().year
+    error: str | None = None
+    snapshot: dict[str, Any] | None = None
+    try:
+        snapshot = slugger_service.get_report(season, refresh=bool(refresh))
+    except Exception as exc:  # noqa: BLE001 -- surface failures inline
+        log.exception("ui.slugger.failed", season=season)
+        error = f"{type(exc).__name__}: {exc}"
+
+    history = slugger_service.history_series(season) if snapshot else {}
+    return _render(
+        request,
+        "slugger.html",
+        {
+            "season": season,
+            "snapshot": snapshot,
+            "history": history,
+            "error": error,
+        },
+    )
+
+
 @router.get("/log", response_class=HTMLResponse)
 def picks_log_view(request: Request) -> HTMLResponse:
     df = services.load_picks_log()

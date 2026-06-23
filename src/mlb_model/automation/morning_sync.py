@@ -163,6 +163,29 @@ def _maybe_notify_premium(today: date) -> None:
         log.exception("morning_sync.notify.osascript_failed")
 
 
+def _record_slugger_snapshot(today: date) -> Any:
+    """Append today's 15+ HR share to the moving-percentage history.
+
+    Lightweight on purpose — one season-totals API call, no per-player game
+    logs or news (those run lazily when the Sluggers page is viewed). This is
+    what makes the trend chart accumulate a point per day. Skipped out of
+    season (no hitters with a PA yet) so we never write junk 0% rows.
+    """
+    from mlb_model.analysis import slugger_slump as ss
+
+    hitters = ss.fetch_season_hitting(today.year)
+    if not any(h.plate_appearances > 0 for h in hitters):
+        log.info("morning_sync.slugger.skipped_offseason", season=today.year)
+        return {"recorded": False, "reason": "no-pa"}
+    breakdown = ss.threshold_breakdown(hitters, season=today.year, as_of=today)
+    ss.append_history(breakdown)
+    return {
+        "recorded": True,
+        "n_at_threshold": breakdown.n_at_threshold,
+        "pct_qualified": round(breakdown.shares["qualified"].pct, 1),
+    }
+
+
 def run_morning_sync(today: date | None = None) -> dict[str, Any]:
     """Pull yesterday's finals + today's slate. Returns row counts."""
     today = today or date.today()
@@ -217,6 +240,14 @@ def run_morning_sync(today: date | None = None) -> dict[str, Any]:
         counts["prediction_cache_cleared"] = True
     except OSError:
         counts["prediction_cache_cleared"] = False
+
+    # 5) Record the daily 15+ HR share so the Sluggers trend chart
+    #    accumulates a point. Best-effort; never fails the sync.
+    try:
+        counts["slugger_snapshot"] = _record_slugger_snapshot(today)
+    except Exception:  # noqa: BLE001
+        log.exception("morning_sync.slugger.failed")
+        counts["slugger_snapshot"] = {"error": True}
 
     # macOS desktop notification when today's slate contains a
     # premium-tier pick. Best-effort -- fails silently on Linux, in

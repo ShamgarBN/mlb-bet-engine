@@ -525,7 +525,11 @@
 {% block scripts %}
 {% if summary %}
 <script>
-  (function() {
+  // Run after deferred scripts (Chart.js + date adapter) have executed —
+  // DOMContentLoaded fires after them, so `Chart` is guaranteed defined.
+  document.addEventListener('DOMContentLoaded', function () {
+    if (typeof Chart === 'undefined') return;
+
     const rolling = {{ rolling | tojson }};
     const calibration = {{ calibration | tojson }};
 
@@ -642,7 +646,7 @@
         },
       });
     }
-  })();
+  });
 </script>
 {% endif %}
 {% endblock %}

@@ -5,12 +5,22 @@ Build a self-contained, Apple Silicon-only `MLB Forecast.app` and wrap it into a
 ## One-shot build
 
 ```bash
+# 0. Ensure lightgbm can load OpenMP (arm64 libomp). REQUIRED on a fresh
+#    venv — the PyPI wheel doesn't bundle libomp, and without it both the
+#    dev app and the packaged .app crash with "Library not loaded:
+#    @rpath/libomp.dylib". Idempotent; see scripts/fix_libomp.sh.
+bash scripts/fix_libomp.sh
+
 # 1. PyInstaller produces dist/MLB Forecast.app/  (~740 MB)
 uv run pyinstaller --noconfirm packaging/mlb_forecast.spec
 
-# 2. hdiutil produces dist/MLB-Forecast-arm64.dmg  (~226 MB compressed)
+# 2. hdiutil produces MLB-Forecast-arm64.dmg at the project root (~234 MB)
 bash packaging/make_dmg.sh
 ```
+
+> The libomp fix lives in `.venv` (gitignored), so re-run step 0 any time you
+> recreate the virtualenv. The PyInstaller spec collects the resulting
+> `libomp.dylib` automatically, so it ends up in the bundle.
 
 ## What's in the bundle
 
