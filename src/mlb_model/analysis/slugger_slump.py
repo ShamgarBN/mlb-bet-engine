@@ -32,7 +32,7 @@ from pathlib import Path
 
 import statsapi
 
-from mlb_model.analysis import news, transactions
+from mlb_model.analysis import matchups, news, transactions
 from mlb_model.config import settings
 from mlb_model.logging import get_logger
 
@@ -110,6 +110,15 @@ class SluggerStatus:
     # Supplementary context only — never changes the verdict.
     news_cause: str = "n/a"
     news_headlines: list[news.Headline] = field(default_factory=list)
+    # Next-game pitching matchup (only graded for bettable/UNCLEAR players).
+    matchup_label: str = "NONE"  # FAVORABLE | NEUTRAL | TOUGH | NONE
+    matchup_pitcher: str | None = None
+    matchup_throws: str | None = None
+    matchup_date: date | None = None
+    matchup_ops: float | None = None
+    matchup_hr9: float | None = None
+    matchup_edge: float | None = None
+    matchup_detail: str = ""
 
     @property
     def status_label(self) -> str:
@@ -337,6 +346,7 @@ def find_slumping_sluggers(
     as_of: date | None = None,
     absence_days: int = 4,
     with_news: bool = True,
+    with_matchups: bool = True,
     hitters: list[HitterSeason] | None = None,
 ) -> list[SluggerStatus]:
     """Find threshold sluggers in a HR drought of ``min_drought``+ games.
@@ -417,7 +427,32 @@ def find_slumping_sluggers(
             )
             status.news_headlines = (relevant or verdict_n.headlines)[:3]
 
-    # Most concerning first: verified injuries, then absences, then long droughts.
+    if with_matchups:
+        # Only the bettable (UNCLEAR) players can actually play — skip the IL /
+        # optioned crowd. One batter-hand batch + one schedule fetch per team.
+        bettable = [(h, s) for h, s in flagged if s.verified_cause == "unverified"]
+        hands = matchups.batter_hands([h.player_id for h, _ in bettable])
+        tm_cache: dict[int, matchups.TeamMatchup | None] = {}
+        for hitter, status in bettable:
+            if hitter.team_id is None:
+                continue
+            if hitter.team_id not in tm_cache:
+                tm_cache[hitter.team_id] = matchups.next_team_matchup(
+                    hitter.team_id, season, as_of=as_of
+                )
+            v = matchups.grade_for_batter(hands.get(hitter.player_id), tm_cache[hitter.team_id])
+            status.matchup_label = v.label
+            status.matchup_pitcher = v.opp_pitcher
+            status.matchup_throws = v.opp_throws
+            status.matchup_date = v.game_date
+            status.matchup_ops = v.ops_allowed
+            status.matchup_hr9 = v.hr9
+            status.matchup_edge = v.edge
+            status.matchup_detail = v.detail
+
+    # Most concerning first for the CLI scan: verified injuries, then
+    # absences, then long droughts. (The web page re-sorts for betting value,
+    # surfacing favorable matchups — see app.slugger_service._betting_priority.)
     statuses.sort(
         key=lambda s: (
             s.verified_cause != "injury-verified",
@@ -433,7 +468,7 @@ def status_to_row(s: SluggerStatus) -> dict:
     """Flatten a SluggerStatus to a CSV/JSON-friendly dict (drops headlines objs)."""
     row = asdict(s)
     row.pop("news_headlines", None)
-    for key in ("last_hr_date", "last_game_date", "il_start", "move_date"):
+    for key in ("last_hr_date", "last_game_date", "il_start", "move_date", "matchup_date"):
         val = getattr(s, key)
         row[key] = val.isoformat() if val else ""
     row["status_label"] = s.status_label

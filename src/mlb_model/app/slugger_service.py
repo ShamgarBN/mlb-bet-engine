@@ -44,14 +44,17 @@ def _status_dict(s: ss.SluggerStatus) -> dict[str, Any]:
     return row
 
 
+_MATCHUP_RANK = {"FAVORABLE": 0, "NEUTRAL": 1, "TOUGH": 2, "NONE": 3}
+
+
 def _betting_priority(row: dict[str, Any]) -> tuple:
     """Sort key for the UI: bettable cold streaks first, injuries last.
 
-    The page is for finding viable lines, so a player who is actively playing
-    through a cold streak (UNCLEAR, not absent) is the most useful and sorts to
-    the top; a verified IL injury isn't bettable and sinks to the bottom.
-    Within a bucket, the longer the HR drought (and the bigger the bat) the
-    higher it ranks.
+    The page is for finding viable lines, so a player actively playing through
+    a cold streak (UNCLEAR, not absent) sorts to the top; a verified IL injury
+    isn't bettable and sinks to the bottom. Within the bettable group, a
+    FAVORABLE pitching matchup ranks ahead of a tough one — that's the actual
+    bounce-back spot — then the longer the HR drought (and bigger the bat).
     """
     label = row["status_label"]
     if label == "INJURY (verified)":
@@ -62,7 +65,8 @@ def _betting_priority(row: dict[str, Any]) -> tuple:
         bucket = 1
     else:
         bucket = 0
-    return (bucket, -int(row["drought_games"]), -int(row["home_runs"]))
+    match_rank = _MATCHUP_RANK.get(row.get("matchup_label", "NONE"), 3)
+    return (bucket, match_rank, -int(row["drought_games"]), -int(row["home_runs"]))
 
 
 def compute_snapshot(
@@ -105,6 +109,7 @@ def compute_snapshot(
         "n_viable": sum(
             1 for s in statuses if s.verified_cause == "unverified" and not s.is_absent
         ),
+        "n_favorable": sum(1 for s in statuses if s.matchup_label == "FAVORABLE"),
         "sluggers": sorted((_status_dict(s) for s in statuses), key=_betting_priority),
     }
 

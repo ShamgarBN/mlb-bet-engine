@@ -937,6 +937,9 @@ def slugger_slumps(
         int, typer.Option(help="Flag players with this many+ HR-less games")
     ] = 5,
     no_news: Annotated[bool, typer.Option(help="Skip the live news lookup")] = False,
+    no_matchups: Annotated[
+        bool, typer.Option(help="Skip the next-game pitching-matchup lookup")
+    ] = False,
     csv_out: Annotated[
         str | None, typer.Option(help="Optional path to write the report as CSV")
     ] = None,
@@ -946,15 +949,17 @@ def slugger_slumps(
     Flags cold streaks (consecutive appeared games with no HR) and absences,
     then verifies the cause against the MLB transactions feed: a player is
     only labelled INJURY or EXTERNAL when MLB logged the IL stint / roster
-    move (with date + injury). Everyone else stays honestly UNCLEAR. Recent
-    news is shown as context only.
+    move (with date + injury). Everyone else stays honestly UNCLEAR. For the
+    bettable (UNCLEAR) players it also grades the next opposing probable
+    pitcher (FAVORABLE / NEUTRAL / TOUGH). News is shown as context only.
     """
     configure_logging()
     from mlb_model.analysis import slugger_slump as ss
 
-    with console.status("Pulling season totals, game logs, and news…"):
+    with console.status("Pulling season totals, game logs, matchups, and news…"):
         flagged = ss.find_slumping_sluggers(
-            season, threshold=threshold, min_drought=min_drought, with_news=not no_news
+            season, threshold=threshold, min_drought=min_drought,
+            with_news=not no_news, with_matchups=not no_matchups,
         )
 
     if not flagged:
@@ -968,6 +973,7 @@ def slugger_slumps(
         "EXTERNAL (verified)": "yellow",
         "UNCLEAR": "chrome",
     }
+    _mcolor = {"FAVORABLE": "green", "TOUGH": "red", "NEUTRAL": "chrome"}
     table = Table(
         title=f"{season}: {threshold}+ HR sluggers gone cold ({len(flagged)} flagged)"
     )
@@ -976,20 +982,26 @@ def slugger_slumps(
     table.add_column("drought", justify="right")
     table.add_column("last HR")
     table.add_column("status")
-    table.add_column("detail", max_width=44)
+    table.add_column("next matchup", max_width=40)
     for s in flagged:
         drought_txt = "—" if s.is_absent and s.drought_games == 0 else f"{s.drought_games}G"
         label = s.status_label
         styled = f"[{_color.get(label, 'white')}]{label}[/]" if label != "UNCLEAR" else label
-        # The detail is the part of the advisory after the "LABEL — " prefix.
-        detail = s.advisory.split(" — ", 1)[-1] if " — " in s.advisory else s.advisory
+        # Matchup column for bettable players; injury/external just show the cause.
+        if label == "UNCLEAR" and s.matchup_label != "NONE":
+            mtag = f"[{_mcolor.get(s.matchup_label, 'white')}]{s.matchup_label.title()}[/]"
+            matchup = f"{mtag} vs {s.matchup_pitcher}" if s.matchup_pitcher else mtag
+        elif label == "UNCLEAR":
+            matchup = "[chrome]no probable yet[/]"
+        else:
+            matchup = s.advisory.split(" — ", 1)[-1] if " — " in s.advisory else "—"
         table.add_row(
             f"{s.name} ({s.team})" if s.team else s.name,
             str(s.home_runs),
             drought_txt,
             s.last_hr_date.isoformat() if s.last_hr_date else "—",
             styled,
-            detail,
+            matchup,
         )
     console.print(table)
 

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from mlb_model.analysis import news, transactions
+from mlb_model.analysis import matchups, news, transactions
 from mlb_model.analysis import slugger_slump as ss
 
 
@@ -242,6 +242,54 @@ def test_morning_sync_skips_offseason(tmp_path, monkeypatch):
     result = msync._record_slugger_snapshot(date(2026, 1, 15))
     assert result["recorded"] is False
     assert not (tmp_path / "hist.csv").exists()
+
+
+# --- pitching matchup grading (offline) ------------------------------------ #
+def _profile(throws="R", ip=80.0, hr9=None, ops=None, vl=None, vr=None):
+    return matchups.PitcherProfile(
+        pitcher_id=1, name="Test Pitcher", throws=throws, innings=ip,
+        home_runs=10, hr9=hr9, ops_allowed=ops, vs_l_ops=vl, vs_r_ops=vr,
+    )
+
+
+def _tm(profile):
+    return matchups.TeamMatchup(game_date=date(2026, 6, 24), opp_pitcher=profile)
+
+
+def test_matchup_none_when_no_game():
+    assert matchups.grade_for_batter("R", None).label == "NONE"
+
+
+def test_matchup_favorable_homer_prone_pitcher():
+    # RHB vs a pitcher who is homer-prone and soft to righties.
+    v = matchups.grade_for_batter("R", _tm(_profile(throws="R", hr9=1.8, ops=.820, vr=.910)))
+    assert v.label == "FAVORABLE"
+    assert v.ops_allowed == .910  # used the vs-RHB split
+    assert v.edge > 0.8
+
+
+def test_matchup_tough_stingy_pitcher():
+    v = matchups.grade_for_batter("R", _tm(_profile(throws="R", hr9=0.6, ops=.600, vr=.610)))
+    assert v.label == "TOUGH"
+    assert v.edge < -0.8
+
+
+def test_matchup_switch_hitter_takes_platoon_side():
+    # Switch hitter vs LHP -> bats R -> should use the vs-RHB (vr) split.
+    prof = _profile(throws="L", hr9=1.2, vl=.500, vr=.900)
+    v = matchups.grade_for_batter("S", _tm(prof))
+    assert v.ops_allowed == .900
+
+
+def test_matchup_falls_back_to_overall_ops_without_splits():
+    v = matchups.grade_for_batter("L", _tm(_profile(throws="R", hr9=1.2, ops=.780, vl=None, vr=None)))
+    assert v.ops_allowed == .780
+
+
+def test_ip_parser_handles_thirds():
+    assert matchups._ip_to_float("16.1") == 16 + 1 / 3
+    assert matchups._ip_to_float("16.2") == 16 + 2 / 3
+    assert matchups._ip_to_float("16.0") == 16.0
 
 
 def test_headline_age_days():
