@@ -24,6 +24,13 @@ log = get_logger("app.slugger_service")
 
 CACHE_DIR = settings.cache_dir / "slugger"
 
+# Bump whenever the snapshot dict / slugger row shape changes. A cached
+# snapshot written by an older app version (different schema) is then ignored
+# and recomputed, instead of being served to a newer template that expects new
+# fields — which would 500. The cache persists in the user's Application
+# Support dir across app upgrades, so this guard is essential.
+SNAPSHOT_SCHEMA = 2
+
 
 def _cache_path(season: int, target: date_cls) -> Path:
     return CACHE_DIR / f"{season}-{target.isoformat()}.json"
@@ -103,6 +110,7 @@ def compute_snapshot(
     )
 
     snapshot = {
+        "schema": SNAPSHOT_SCHEMA,
         "season": season,
         "threshold": threshold,
         "target_pct": target_pct,
@@ -128,16 +136,26 @@ def compute_snapshot(
 
 
 def load_snapshot(season: int, *, as_of: date_cls | None = None) -> dict[str, Any] | None:
-    """Return today's cached snapshot if present, else None."""
+    """Return today's cached snapshot if present AND schema-compatible.
+
+    A snapshot written by an older app version is ignored (returns None →
+    recompute) so a newer template never renders against a missing field.
+    """
     as_of = as_of or date_cls.today()
     path = _cache_path(season, as_of)
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except Exception as exc:  # noqa: BLE001 -- defensive cache read
         log.warning("slugger.cache.read_failed", path=str(path), error=str(exc))
         return None
+    if not isinstance(data, dict) or data.get("schema") != SNAPSHOT_SCHEMA:
+        log.info("slugger.cache.schema_mismatch", path=str(path),
+                 found=data.get("schema") if isinstance(data, dict) else None,
+                 expected=SNAPSHOT_SCHEMA)
+        return None
+    return data
 
 
 def get_report(

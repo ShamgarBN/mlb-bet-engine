@@ -295,6 +295,25 @@ def test_active_today_requires_playing_unverified_present():
     assert not _status(verified_cause="injury-verified", plays_today=True).active_today
 
 
+# --- snapshot cache schema gate (offline) ----------------------------------- #
+def test_snapshot_cache_rejects_stale_schema(tmp_path, monkeypatch):
+    import json as _json
+
+    from mlb_model.app import slugger_service as svc
+
+    monkeypatch.setattr(svc, "CACHE_DIR", tmp_path)
+    path = tmp_path / f"2026-{date(2026, 6, 25).isoformat()}.json"
+
+    # An old-version snapshot (no "schema" key) must be ignored -> recompute.
+    path.write_text(_json.dumps({"season": 2026, "threshold": 15, "n_viable": 3}))
+    assert svc.load_snapshot(2026, as_of=date(2026, 6, 25)) is None
+
+    # A current-schema snapshot loads.
+    path.write_text(_json.dumps({"schema": svc.SNAPSHOT_SCHEMA, "season": 2026}))
+    got = svc.load_snapshot(2026, as_of=date(2026, 6, 25))
+    assert got is not None and got["season"] == 2026
+
+
 # --- pitching matchup grading (offline) ------------------------------------ #
 def _profile(throws="R", ip=80.0, hr9=None, ops=None, vl=None, vr=None):
     return matchups.PitcherProfile(
