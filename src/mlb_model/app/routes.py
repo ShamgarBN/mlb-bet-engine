@@ -343,7 +343,7 @@ def slugger_view(
         log.exception("ui.slugger.failed", season=season)
         error = f"{type(exc).__name__}: {exc}"
 
-    history = slugger_service.history_series(season) if snapshot else {}
+    history = slugger_service.threshold_series(season) if snapshot else []
     return _render(
         request,
         "slugger.html",

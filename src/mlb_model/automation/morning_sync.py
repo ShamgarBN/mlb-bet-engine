@@ -177,10 +177,15 @@ def _record_slugger_snapshot(today: date) -> Any:
     if not any(h.plate_appearances > 0 for h in hitters):
         log.info("morning_sync.slugger.skipped_offseason", season=today.year)
         return {"recorded": False, "reason": "no-pa"}
-    breakdown = ss.threshold_breakdown(hitters, season=today.year, as_of=today)
+    # Record the dynamic (top-N%) bar so the trend chart tracks it rising.
+    threshold = ss.dynamic_threshold(hitters)
+    breakdown = ss.threshold_breakdown(
+        hitters, season=today.year, threshold=threshold, as_of=today
+    )
     ss.append_history(breakdown)
     return {
         "recorded": True,
+        "threshold": threshold,
         "n_at_threshold": breakdown.n_at_threshold,
         "pct_qualified": round(breakdown.shares["qualified"].pct, 1),
     }

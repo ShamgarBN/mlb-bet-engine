@@ -244,6 +244,57 @@ def test_morning_sync_skips_offseason(tmp_path, monkeypatch):
     assert not (tmp_path / "hist.csv").exists()
 
 
+# --- dynamic HR threshold --------------------------------------------------- #
+def test_dynamic_threshold_tracks_top_pct():
+    # 100 qualified hitters with HR = 0..99. Top 10% -> the 10th-highest is 90.
+    hitters = [
+        ss.HitterSeason(player_id=i, name=f"p{i}", team="X", team_id=1,
+                        home_runs=i, plate_appearances=300, at_bats=300, games=70)
+        for i in range(100)
+    ]
+    assert ss.dynamic_threshold(hitters, target_pct=10, floor=0) == 90
+
+
+def test_dynamic_threshold_respects_floor():
+    # Early-season-ish: top 10% is only 6 HR, but the floor holds at 15.
+    hitters = [
+        ss.HitterSeason(player_id=i, name=f"p{i}", team="X", team_id=1,
+                        home_runs=i % 8, plate_appearances=300, at_bats=300, games=70)
+        for i in range(100)
+    ]
+    assert ss.dynamic_threshold(hitters, target_pct=10, floor=15) == 15
+
+
+def test_dynamic_threshold_ignores_non_qualified():
+    # Big HR totals but under the PA floor shouldn't define the bar.
+    hitters = [
+        ss.HitterSeason(player_id=1, name="reg", team="X", team_id=1,
+                        home_runs=12, plate_appearances=400, at_bats=400, games=90),
+        ss.HitterSeason(player_id=2, name="parttime", team="X", team_id=1,
+                        home_runs=40, plate_appearances=50, at_bats=50, games=15),
+    ]
+    # Only the 400-PA hitter qualifies -> bar is his 12, floored at 10.
+    assert ss.dynamic_threshold(hitters, target_pct=10, floor=10) == 12
+
+
+# --- active-today gating ---------------------------------------------------- #
+def _status(**kw):
+    base = dict(
+        player_id=1, name="X", team="NYY", home_runs=20, games=70, drought_games=6,
+        last_hr_date=date(2026, 6, 10), last_game_date=date(2026, 6, 24),
+        days_since_last_game=1, is_absent=False,
+    )
+    base.update(kw)
+    return ss.SluggerStatus(**base)
+
+
+def test_active_today_requires_playing_unverified_present():
+    assert _status(verified_cause="unverified", plays_today=True, is_absent=False).active_today
+    assert not _status(verified_cause="unverified", plays_today=False).active_today  # off today
+    assert not _status(verified_cause="unverified", plays_today=True, is_absent=True).active_today
+    assert not _status(verified_cause="injury-verified", plays_today=True).active_today
+
+
 # --- pitching matchup grading (offline) ------------------------------------ #
 def _profile(throws="R", ip=80.0, hr9=None, ops=None, vl=None, vr=None):
     return matchups.PitcherProfile(

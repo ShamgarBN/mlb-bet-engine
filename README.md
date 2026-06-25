@@ -297,12 +297,17 @@ suspended) when MLB actually logged the move. Everyone else stays honestly
 name-proximity + negation guards) is shown as **supplementary context only**
 — it never drives the verdict.
 
+The HR bar is **dynamic** — each run it tracks the top ~10% of qualified
+hitters by HR (floored at 15), so the list stays "elite power" as the league
+accumulates homers through the season instead of ballooning. The trend chart
+shows that bar rising over time.
+
 For each bettable (UNCLEAR) slugger it also grades the **next-game pitching
 matchup**: the opposing probable pitcher's season HR/9 and the OPS he allows
 to the hitter's hand (switch hitters take the platoon side) vs league
-baselines → `FAVORABLE` / `NEUTRAL` / `TOUGH`. Favorable matchups sort to the
-top, so a cold bat facing a homer-prone pitcher — the prime bounce-back
-spot — surfaces first.
+baselines → `FAVORABLE` / `NEUTRAL` / `TOUGH`. The page leads with the bats
+**playing a pre-game game today**, sorted favorable-matchup first (the prime
+bounce-back spot); off-today and IL bats are fenced off below.
 
 Available both in the desktop app (the **Sluggers** tab — percentage cards,
 a moving-percentage trend chart, and the verified-cause table with matchup
@@ -324,11 +329,12 @@ uv run mlb-model slugger slumps --season 2026 --csv-out reports/slumps.csv
 uv run mlb-model slugger slumps --season 2026 --no-news   # skip the news lookup
 ```
 
-The engine lives in `mlb_model.analysis` — `slugger_slump` (analysis +
-plain dataclasses), `transactions` (IL/roster verification), `matchups`
-(next-game pitcher grading), and `news` (supplementary headlines). The web
-page is served from a dated cache (`data/cache/slugger/`); the Refresh button
-recomputes.
+The engine lives in `mlb_model.analysis` — `slugger_slump` (analysis,
+dynamic threshold, plain dataclasses), `transactions` (IL/roster
+verification), `matchups` (next-game pitcher grading + plays-today), and
+`news` (supplementary headlines). The web page is served from a dated cache
+(`data/cache/slugger/`); the Refresh button recomputes. Bar configurable via
+`--target-pct` / `--threshold`.
 
 ### Automated data refresh and self-improvement
 

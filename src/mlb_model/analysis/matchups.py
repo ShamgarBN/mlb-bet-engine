@@ -128,20 +128,17 @@ def fetch_pitcher_profile(pitcher_id: int, season: int) -> PitcherProfile | None
     )
 
 
-def next_team_matchup(team_id: int, season: int, *, as_of: date | None = None,
-                      window_days: int = 6) -> TeamMatchup | None:
-    """The team's next unplayed game's opposing probable pitcher, graded-ready."""
-    as_of = as_of or date.today()
-    try:
-        sched = statsapi.schedule(
-            start_date=as_of.isoformat(),
-            end_date=(as_of + timedelta(days=window_days)).isoformat(),
-            team=int(team_id),
-        )
-    except Exception:  # noqa: BLE001
-        log.warning("matchup.schedule.fetch_failed", team_id=int(team_id))
-        return None
+@dataclass(slots=True)
+class TeamDay:
+    """A team's situation on the selected day."""
 
+    plays_today: bool                  # has a not-yet-started game on `as_of`
+    matchup: TeamMatchup | None        # next unplayed game's opposing pitcher
+
+
+def _first_matchup(sched: list[dict], team_id: int, season: int,
+                   as_of: date) -> TeamMatchup | None:
+    """First upcoming game (with a known opposing probable), graded-ready."""
     for g in sched:
         if g.get("status") in _STARTED_OR_DONE:
             continue
@@ -166,6 +163,39 @@ def next_team_matchup(team_id: int, season: int, *, as_of: date | None = None,
             gd = as_of
         return TeamMatchup(game_date=gd, opp_pitcher=profile)
     return None
+
+
+def team_status(team_id: int, season: int, *, as_of: date | None = None,
+                window_days: int = 6) -> TeamDay:
+    """Whether the team has a (bettable) game today, plus its next matchup.
+
+    One schedule fetch powers both. ``plays_today`` is True only when there's
+    a game on ``as_of`` that hasn't started yet — i.e. an actionable, pre-game
+    spot. A game already in progress / final today counts as "not playing".
+    """
+    as_of = as_of or date.today()
+    try:
+        sched = statsapi.schedule(
+            start_date=as_of.isoformat(),
+            end_date=(as_of + timedelta(days=window_days)).isoformat(),
+            team=int(team_id),
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("matchup.schedule.fetch_failed", team_id=int(team_id))
+        return TeamDay(plays_today=False, matchup=None)
+
+    today_iso = as_of.isoformat()
+    plays_today = any(
+        str(g.get("game_date"))[:10] == today_iso and g.get("status") not in _STARTED_OR_DONE
+        for g in sched
+    )
+    return TeamDay(plays_today=plays_today, matchup=_first_matchup(sched, team_id, season, as_of))
+
+
+def next_team_matchup(team_id: int, season: int, *, as_of: date | None = None,
+                      window_days: int = 6) -> TeamMatchup | None:
+    """Back-compat wrapper: just the next matchup (see :func:`team_status`)."""
+    return team_status(team_id, season, as_of=as_of, window_days=window_days).matchup
 
 
 def batter_hands(player_ids: list[int]) -> dict[int, str]:

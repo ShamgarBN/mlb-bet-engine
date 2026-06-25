@@ -38,7 +38,6 @@ from mlb_model.logging import get_logger
 
 log = get_logger("analysis.slugger_slump")
 
-DEFAULT_HR_THRESHOLD = 15
 DEFAULT_MIN_DROUGHT = 5
 # A regular/qualified hitter accrues ~3.1 PA per team game; by midseason the
 # everyday bats are well past 200 PA. We use a fixed floor rather than the
@@ -46,7 +45,43 @@ DEFAULT_MIN_DROUGHT = 5
 # matches the "regular hitter" denominator we report to the user.
 QUALIFIED_PA_FLOOR = 200
 
+# The HR bar is dynamic: each run it tracks the top ``DEFAULT_TARGET_PCT`` of
+# qualified hitters by HR, so the list stays "elite power" as the league
+# accumulates homers through the season. ``DEFAULT_HR_FLOOR`` keeps it from
+# dropping below the original early-season standard. (A fixed bar can still be
+# forced via the ``threshold=`` arg.)
+DEFAULT_TARGET_PCT = 10.0
+DEFAULT_HR_FLOOR = 15
+DEFAULT_HR_THRESHOLD = DEFAULT_HR_FLOOR  # back-compat alias for callers/tests
+
 HISTORY_PATH = settings.processed_dir / "slugger_hr_pct_history.csv"
+
+
+def dynamic_threshold(
+    hitters: list["HitterSeason"],
+    *,
+    target_pct: float = DEFAULT_TARGET_PCT,
+    floor: int = DEFAULT_HR_FLOOR,
+    pa_floor: int = QUALIFIED_PA_FLOOR,
+) -> int:
+    """HR bar that captures roughly the top ``target_pct`` of qualified hitters.
+
+    Computed from the HR total of the qualified hitter sitting at the
+    ``target_pct`` rank (e.g. the 22nd of 221 for 10%), then floored at
+    ``floor``. Integer HR totals + ties mean the captured share is approximate
+    and lands on whole-HR steps; the floor guarantees the bar only ever rises
+    above the early-season standard, never below it.
+    """
+    qual = sorted(
+        (h.home_runs for h in hitters if h.plate_appearances >= pa_floor),
+        reverse=True,
+    )
+    if not qual:
+        return floor
+    import math
+
+    idx = min(len(qual) - 1, max(0, math.ceil(target_pct / 100.0 * len(qual)) - 1))
+    return max(floor, int(qual[idx]))
 
 
 # --------------------------------------------------------------------------- #
@@ -119,6 +154,21 @@ class SluggerStatus:
     matchup_hr9: float | None = None
     matchup_edge: float | None = None
     matchup_detail: str = ""
+    # Whether the player's team has a not-yet-started game on the selected day.
+    plays_today: bool = False
+
+    @property
+    def active_today(self) -> bool:
+        """The primary betting target: a bettable cold bat playing today.
+
+        Top-N% HR, in a slump, cause UNCLEAR (not on the IL / optioned), team
+        has a pre-game game today, and the player is actually in the mix (not
+        sitting out / day-to-day)."""
+        return (
+            self.verified_cause == "unverified"
+            and self.plays_today
+            and not self.is_absent
+        )
 
     @property
     def status_label(self) -> str:
@@ -432,15 +482,17 @@ def find_slumping_sluggers(
         # optioned crowd. One batter-hand batch + one schedule fetch per team.
         bettable = [(h, s) for h, s in flagged if s.verified_cause == "unverified"]
         hands = matchups.batter_hands([h.player_id for h, _ in bettable])
-        tm_cache: dict[int, matchups.TeamMatchup | None] = {}
+        td_cache: dict[int, matchups.TeamDay] = {}
         for hitter, status in bettable:
             if hitter.team_id is None:
                 continue
-            if hitter.team_id not in tm_cache:
-                tm_cache[hitter.team_id] = matchups.next_team_matchup(
+            if hitter.team_id not in td_cache:
+                td_cache[hitter.team_id] = matchups.team_status(
                     hitter.team_id, season, as_of=as_of
                 )
-            v = matchups.grade_for_batter(hands.get(hitter.player_id), tm_cache[hitter.team_id])
+            team_day = td_cache[hitter.team_id]
+            status.plays_today = team_day.plays_today
+            v = matchups.grade_for_batter(hands.get(hitter.player_id), team_day.matchup)
             status.matchup_label = v.label
             status.matchup_pitcher = v.opp_pitcher
             status.matchup_throws = v.opp_throws
@@ -472,6 +524,7 @@ def status_to_row(s: SluggerStatus) -> dict:
         val = getattr(s, key)
         row[key] = val.isoformat() if val else ""
     row["status_label"] = s.status_label
+    row["active_today"] = s.active_today
     row["advisory"] = s.advisory
     row["top_headline"] = s.news_headlines[0].title if s.news_headlines else ""
     return row

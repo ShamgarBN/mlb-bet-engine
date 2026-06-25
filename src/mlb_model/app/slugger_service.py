@@ -58,13 +58,15 @@ def _betting_priority(row: dict[str, Any]) -> tuple:
     """
     label = row["status_label"]
     if label == "INJURY (verified)":
-        bucket = 3
+        bucket = 4
     elif label == "EXTERNAL (verified)":
-        bucket = 2
-    elif row["is_absent"]:
-        bucket = 1
+        bucket = 3
+    elif row.get("active_today"):
+        bucket = 0   # the primary target: bettable cold bat playing today
+    elif row.get("plays_today"):
+        bucket = 1   # plays today but day-to-day / sitting — questionable
     else:
-        bucket = 0
+        bucket = 2   # team off today (or game already done) — not actionable today
     match_rank = _MATCHUP_RANK.get(row.get("matchup_label", "NONE"), 3)
     return (bucket, match_rank, -int(row["drought_games"]), -int(row["home_runs"]))
 
@@ -72,14 +74,22 @@ def _betting_priority(row: dict[str, Any]) -> tuple:
 def compute_snapshot(
     season: int,
     *,
-    threshold: int = ss.DEFAULT_HR_THRESHOLD,
+    threshold: int | None = None,
+    target_pct: float = ss.DEFAULT_TARGET_PCT,
     min_drought: int = ss.DEFAULT_MIN_DROUGHT,
     as_of: date_cls | None = None,
     with_news: bool = True,
 ) -> dict[str, Any]:
-    """Run the engine, persist a dated history snapshot, and cache the result."""
+    """Run the engine, persist a dated history snapshot, and cache the result.
+
+    ``threshold`` defaults to a dynamic bar tracking the top ``target_pct`` of
+    qualified hitters by HR (so it rises through the season); pass an int to
+    force a fixed bar.
+    """
     as_of = as_of or date_cls.today()
     hitters = ss.fetch_season_hitting(season)
+    if threshold is None:
+        threshold = ss.dynamic_threshold(hitters, target_pct=target_pct)
     breakdown = ss.threshold_breakdown(hitters, season=season, threshold=threshold, as_of=as_of)
     ss.append_history(breakdown)  # feed the moving-percentage series
 
@@ -95,6 +105,7 @@ def compute_snapshot(
     snapshot = {
         "season": season,
         "threshold": threshold,
+        "target_pct": target_pct,
         "min_drought": min_drought,
         "as_of": as_of.isoformat(),
         "computed_at": datetime.now().isoformat(timespec="seconds"),
@@ -106,10 +117,8 @@ def compute_snapshot(
         "n_injury": sum(1 for s in statuses if s.verified_cause == "injury-verified"),
         "n_external": sum(1 for s in statuses if s.verified_cause == "external-verified"),
         "n_unclear": sum(1 for s in statuses if s.verified_cause == "unverified"),
-        "n_viable": sum(
-            1 for s in statuses if s.verified_cause == "unverified" and not s.is_absent
-        ),
-        "n_favorable": sum(1 for s in statuses if s.matchup_label == "FAVORABLE"),
+        "n_active_today": sum(1 for s in statuses if s.active_today),
+        "n_favorable": sum(1 for s in statuses if s.active_today and s.matchup_label == "FAVORABLE"),
         "sluggers": sorted((_status_dict(s) for s in statuses), key=_betting_priority),
     }
 
@@ -142,22 +151,21 @@ def get_report(
     return compute_snapshot(season, as_of=as_of)
 
 
-def history_series(season: int, *, threshold: int = ss.DEFAULT_HR_THRESHOLD) -> dict[str, list[dict]]:
-    """The recorded moving-percentage series, grouped by denominator.
+def threshold_series(season: int) -> list[dict]:
+    """The HR bar over the season — one point per recorded day.
 
-    Returns ``{denominator: [{"x": "2026-06-22", "y": 15.9}, ...]}`` ready to
-    hand to Chart.js. Empty dict if no history has been recorded yet.
+    With a dynamic top-N% bar the "share at threshold" is ~constant by design,
+    so the meaningful trend is the bar itself rising. Returns
+    ``[{"x": "2026-06-22", "y": 15}, ...]`` (the recorded threshold per day).
+    Empty list if no history yet.
     """
     if not ss.HISTORY_PATH.exists():
-        return {}
-    series: dict[str, list[dict]] = {}
+        return []
+    by_day: dict[str, int] = {}
     with ss.HISTORY_PATH.open(newline="") as fh:
         for r in csv.DictReader(fh):
-            if int(r["season"]) != season or int(r["threshold"]) != threshold:
+            if int(r["season"]) != season:
                 continue
-            series.setdefault(r["denominator"], []).append(
-                {"x": r["as_of"], "y": round(float(r["pct"]), 2)}
-            )
-    for rows in series.values():
-        rows.sort(key=lambda p: p["x"])
-    return series
+            # One threshold per (day, season); rows repeat it per denominator.
+            by_day[r["as_of"]] = int(r["threshold"])
+    return [{"x": d, "y": by_day[d]} for d in sorted(by_day)]

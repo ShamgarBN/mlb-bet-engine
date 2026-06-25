@@ -861,20 +861,29 @@ def serve(
 @slugger_app.command("percent")
 def slugger_percent(
     season: Annotated[int, typer.Option(help="Season year")] = date_cls.today().year,
-    threshold: Annotated[int, typer.Option(help="HR threshold")] = 15,
+    threshold: Annotated[
+        int | None, typer.Option(help="Fixed HR bar; omit for the dynamic top-N% bar")
+    ] = None,
+    target_pct: Annotated[
+        float, typer.Option(help="Dynamic bar: top % of qualified hitters by HR")
+    ] = 10.0,
     track: Annotated[
         bool, typer.Option(help="Append today's snapshot to the moving-history CSV")
     ] = True,
 ) -> None:
-    """Share of players at/above the HR threshold, across three denominators.
+    """Share of players at/above the HR bar, across three denominators.
 
-    With --track (default) it appends today's snapshot so you can watch the
-    percentage move as the season progresses.
+    The bar defaults to the top ``--target-pct`` of qualified hitters by HR
+    (rises through the season); pass ``--threshold`` to force a fixed bar.
+    With --track (default) it appends today's snapshot to the history CSV.
     """
     configure_logging()
     from mlb_model.analysis import slugger_slump as ss
 
     hitters = ss.fetch_season_hitting(season)
+    if threshold is None:
+        threshold = ss.dynamic_threshold(hitters, target_pct=target_pct)
+        console.print(f"[dim]Dynamic bar: top {target_pct:g}% → [bold]{threshold}+ HR[/bold][/dim]")
     bd = ss.threshold_breakdown(hitters, season=season, threshold=threshold)
 
     table = Table(title=f"{season}: players with {threshold}+ HR  (n = {bd.n_at_threshold})")
@@ -932,7 +941,12 @@ def slugger_history(
 @slugger_app.command("slumps")
 def slugger_slumps(
     season: Annotated[int, typer.Option(help="Season year")] = date_cls.today().year,
-    threshold: Annotated[int, typer.Option(help="HR threshold")] = 15,
+    threshold: Annotated[
+        int | None, typer.Option(help="Fixed HR bar; omit for the dynamic top-N% bar")
+    ] = None,
+    target_pct: Annotated[
+        float, typer.Option(help="Dynamic bar: top % of qualified hitters by HR")
+    ] = 10.0,
     min_drought: Annotated[
         int, typer.Option(help="Flag players with this many+ HR-less games")
     ] = 5,
@@ -944,23 +958,27 @@ def slugger_slumps(
         str | None, typer.Option(help="Optional path to write the report as CSV")
     ] = None,
 ) -> None:
-    """Find threshold sluggers in a 5+ game HR drought and explain why.
+    """Find slumping sluggers above the HR bar and explain why.
 
-    Flags cold streaks (consecutive appeared games with no HR) and absences,
-    then verifies the cause against the MLB transactions feed: a player is
-    only labelled INJURY or EXTERNAL when MLB logged the IL stint / roster
-    move (with date + injury). Everyone else stays honestly UNCLEAR. For the
-    bettable (UNCLEAR) players it also grades the next opposing probable
-    pitcher (FAVORABLE / NEUTRAL / TOUGH). News is shown as context only.
+    The bar defaults to the top ``--target-pct`` of qualified hitters by HR
+    (rises through the season; pass ``--threshold`` for a fixed bar). Flags
+    cold streaks + absences, verifies the cause against the MLB transactions
+    feed (INJURY / EXTERNAL only when MLB logged the move; else UNCLEAR), and
+    for bettable players grades the next opposing pitcher and whether they
+    play today. News is context only.
     """
     configure_logging()
     from mlb_model.analysis import slugger_slump as ss
 
     with console.status("Pulling season totals, game logs, matchups, and news…"):
+        hitters = ss.fetch_season_hitting(season)
+        if threshold is None:
+            threshold = ss.dynamic_threshold(hitters, target_pct=target_pct)
         flagged = ss.find_slumping_sluggers(
             season, threshold=threshold, min_drought=min_drought,
-            with_news=not no_news, with_matchups=not no_matchups,
+            with_news=not no_news, with_matchups=not no_matchups, hitters=hitters,
         )
+    console.print(f"[dim]HR bar: [bold]{threshold}+[/bold] (top ~{target_pct:g}% of qualified hitters)[/dim]")
 
     if not flagged:
         console.print(

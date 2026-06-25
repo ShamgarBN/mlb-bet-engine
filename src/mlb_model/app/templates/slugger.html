@@ -11,8 +11,10 @@
         <span class="text-chrome-500 font-normal">· {{ season }}</span>
       </h1>
       <p class="text-xs text-chrome-400 mt-0.5 max-w-2xl">
-        {{ snapshot.threshold if snapshot else 15 }}+ HR bats with no homer in their last
-        {{ snapshot.min_drought if snapshot else 5 }}+ games played. Cause is labelled
+        Top ~{{ snapshot.target_pct|round|int if snapshot else 10 }}% HR hitters
+        (<span class="text-chrome-200">{{ snapshot.threshold if snapshot else 15 }}+ HR</span> today)
+        with no homer in their last {{ snapshot.min_drought if snapshot else 5 }}+ games played.
+        The bar rises as the league earns more HRs. Cause is labelled
         <span class="text-rose-300">INJURY</span> / <span class="text-amber-300">EXTERNAL</span>
         only when MLB logged the move; otherwise <span class="text-chrome-300">UNCLEAR</span>.
       </p>
@@ -53,19 +55,19 @@
     {% endfor %}
   </div>
 
-  <!-- Moving-percentage chart (full card only once there's a real trend) -->
-  {% set has_history = history and (history.values() | list | length) and (history['qualified'] | default([]) | length >= 2 or history['all_pa'] | default([]) | length >= 2) %}
+  <!-- HR-bar trend (full card only once there are 2+ daily snapshots) -->
+  {% set has_history = history and (history | length >= 2) %}
   {% if has_history %}
   <div class="rounded-lg border border-chrome-700/50 bg-chrome-800/40 px-3 py-2">
     <div class="flex items-center justify-between">
-      <h2 class="text-xs font-semibold text-chrome-300">{{ snapshot.threshold }}+ HR share over the season</h2>
+      <h2 class="text-xs font-semibold text-chrome-300">Top ~{{ snapshot.target_pct|round|int }}% HR bar over the season</h2>
       <div class="text-[11px] text-chrome-500">{{ snapshot.n_injury }} injury · {{ snapshot.n_external }} external · {{ snapshot.n_unclear }} unclear</div>
     </div>
     <div class="h-28 mt-2"><canvas id="pct-chart"></canvas></div>
   </div>
   {% else %}
   <div class="flex items-center justify-between rounded-lg border border-chrome-800 bg-chrome-800/30 px-3 py-1.5 text-[11px] text-chrome-500">
-    <span>Trend chart builds after 2 daily snapshots (each Refresh adds a point).</span>
+    <span>HR-bar trend builds after 2 daily snapshots (each Refresh adds a point).</span>
     <span>{{ snapshot.n_injury }} injury · {{ snapshot.n_external }} external · {{ snapshot.n_unclear }} unclear</span>
   </div>
   {% endif %}
@@ -88,12 +90,25 @@
 
   <div class="rounded-lg border border-chrome-700/50 overflow-hidden">
     <div class="flex items-center justify-between bg-chrome-800/70 px-3 py-1.5 text-[11px] uppercase tracking-wider text-chrome-400">
-      <span>Player · cold streak · HR · matchup</span>
-      <span>{{ snapshot.n_viable }} bettable · {{ snapshot.n_favorable }} favorable matchup</span>
+      <span>Active today · cold streak · HR · matchup</span>
+      <span><span class="text-emerald-300">{{ snapshot.n_active_today }} active today</span> · {{ snapshot.n_favorable }} favorable matchup</span>
     </div>
 
-    {% set ns = namespace(il_header_shown=false) %}
+    {% set ns = namespace(inactive_shown=false, il_header_shown=false) %}
+    {% if snapshot.n_active_today == 0 %}
+      <div class="px-3 py-2 text-[11px] text-chrome-500 border-t border-chrome-800">
+        No qualifying sluggers have a pre-game game today — see upcoming spots below.
+      </div>
+    {% endif %}
     {% for s in snapshot.sluggers %}
+      {# Fence: bettable but not playing today (team off / already played / sitting). #}
+      {% if not s.active_today and s.status_label != 'INJURY (verified)' and not ns.inactive_shown %}
+        {% set ns.inactive_shown = true %}
+        <div class="flex items-center gap-2 bg-chrome-900/40 px-3 py-1 text-[11px] uppercase tracking-wider text-chrome-500 border-t border-chrome-700/50">
+          <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          Not playing today — off day, game already started, or sitting
+        </div>
+      {% endif %}
       {# Fence off the verified-injury group at the bottom — not bettable. #}
       {% if s.status_label == 'INJURY (verified)' and not ns.il_header_shown %}
         {% set ns.il_header_shown = true %}
@@ -104,7 +119,7 @@
       {% endif %}
 
       {% set injured = s.status_label == 'INJURY (verified)' %}
-      <details class="group border-t border-chrome-800 {{ 'opacity-60 hover:opacity-100 transition-opacity' if injured else '' }}">
+      <details class="group border-t border-chrome-800 {{ 'opacity-60 hover:opacity-100 transition-opacity' if not s.active_today else '' }}">
         <summary class="flex items-center gap-3 px-3 py-1.5 cursor-pointer hover:bg-chrome-800/30 list-none [&::-webkit-details-marker]:hidden">
           <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 shrink-0 text-chrome-600 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
           <div class="min-w-0 flex-1 truncate">
@@ -184,11 +199,11 @@
   </div>
 
   <p class="text-xs text-chrome-500">
-    Sorted for betting value: favorable next-game matchups first within the bettable group,
-    verified IL injuries last. <span class="text-emerald-300/80">Favorable</span> = the next
-    opposing probable pitcher is homer-prone / soft vs the hitter's hand (HR/9 + vs-hand OPS
-    allowed). Injury status reads the MLB transactions feed; news is context only.
-    Informational use, not financial advice.
+    Bar = top ~{{ snapshot.target_pct|round|int }}% of qualified hitters by HR (rises through
+    the season). Primary list = bats playing a pre-game game today, sorted by
+    <span class="text-emerald-300/80">favorable</span> matchup (opposing probable pitcher
+    homer-prone / soft vs the hitter's hand). Off-today and IL bats are separated below.
+    Injury status reads the MLB transactions feed; news is context only. Not financial advice.
   </p>
   {% elif not error %}
   <div class="rounded-xl border border-chrome-700/50 bg-chrome-800/40 p-8 text-center text-chrome-400">
@@ -204,43 +219,38 @@
   // Run after deferred scripts (Chart.js + date adapter) have executed —
   // DOMContentLoaded fires after them, so `Chart` is guaranteed defined.
   document.addEventListener('DOMContentLoaded', function () {
-    const history = {{ history | tojson }};
+    const history = {{ history | tojson }};   // [{x: "2026-06-22", y: 15}, ...]
     const canvas = document.getElementById('pct-chart');
-    if (!canvas || typeof Chart === 'undefined' || !Object.keys(history).length) return;
-
-    const meta = {
-      qualified: { label: 'Regular (≥200 PA)', color: '#86efac' },
-      has_hr:    { label: '≥1 HR',             color: '#fbbf24' },
-      all_pa:    { label: '≥1 PA',             color: '#60a5fa' },
-    };
-    const datasets = Object.entries(history).map(([key, rows]) => ({
-      label: (meta[key] || {}).label || key,
-      data: rows.map(r => ({ x: r.x, y: r.y })),
-      borderColor: (meta[key] || {}).color || '#a78bfa',
-      backgroundColor: ((meta[key] || {}).color || '#a78bfa') + '20',
-      borderWidth: 2,
-      pointRadius: 2,
-      tension: 0.2,
-    }));
+    if (!canvas || typeof Chart === 'undefined' || !history.length) return;
 
     new Chart(canvas, {
       type: 'line',
-      data: { datasets },
+      data: {
+        datasets: [{
+          label: 'HR bar',
+          data: history.map(r => ({ x: r.x, y: r.y })),
+          borderColor: '#86efac',
+          backgroundColor: '#86efac20',
+          borderWidth: 2,
+          pointRadius: 2,
+          stepped: true,            // the bar moves in whole-HR steps
+          fill: true,
+        }],
+      },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         interaction: { mode: 'nearest', axis: 'x', intersect: false },
         plugins: {
-          // Compact legend on top; auto-scaled y so the lines actually read.
-          legend: { position: 'top', align: 'end',
-                    labels: { color: '#94a3b8', boxWidth: 10, boxHeight: 10, font: { size: 10 }, padding: 8 } },
-          tooltip: { callbacks: { label: c => `${c.dataset.label}: ${c.parsed.y.toFixed(1)}%` } },
+          legend: { display: false },
+          tooltip: { callbacks: { label: c => `${c.parsed.y} HR bar` } },
         },
         scales: {
           x: { type: 'time', time: { unit: 'week' },
                ticks: { color: '#64748b', font: { size: 10 }, maxRotation: 0 },
                grid: { color: 'rgba(100,116,139,0.08)' } },
-          y: { ticks: { color: '#64748b', font: { size: 10 }, maxTicksLimit: 4, callback: v => v + '%' },
+          y: { ticks: { color: '#64748b', font: { size: 10 }, maxTicksLimit: 4, precision: 0,
+                        callback: v => v + ' HR' },
                grid: { color: 'rgba(100,116,139,0.08)' } },
         },
       },
