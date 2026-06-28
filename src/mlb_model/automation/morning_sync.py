@@ -237,8 +237,21 @@ def run_morning_sync(today: date | None = None) -> dict[str, Any]:
         log.exception("morning_sync.weather.failed")
         counts["weather"] = {"error": True}
 
+    # 3b) Ingest today's live odds (one /odds call; uses MLB_ODDS_API_KEY).
+    #     This writes the slate's ML / RL / total lines into the warehouse so
+    #     the prediction pipeline — and therefore the Discord alert built below
+    #     — uses real market lines instead of the league-average baseline.
+    #     No-ops cleanly without a key.
+    try:
+        from mlb_model.data.sources import odds_api as _odds_api
+
+        counts["odds"] = _odds_api.ingest_live_slate()
+    except Exception:  # noqa: BLE001 -- odds are best-effort; baseline is the fallback
+        log.exception("morning_sync.odds.failed")
+        counts["odds"] = {"error": True}
+
     # 4) Invalidate today's cached prediction parquet so the next dashboard
-    #    load re-runs with the freshly ingested probables / weather.
+    #    load re-runs with the freshly ingested probables / weather / odds.
     cached = settings.cache_dir / "predictions" / f"{today.isoformat()}.parquet"
     try:
         cached.unlink(missing_ok=True)
