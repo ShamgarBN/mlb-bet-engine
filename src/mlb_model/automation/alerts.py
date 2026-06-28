@@ -174,7 +174,7 @@ def build_message(
         lines.append(f"\n__Game markets__ ({len(game_picks)})")
         for p in shown:
             conf = f"{p['confidence'] * 100:.0f}%" if p.get("confidence") is not None else "—"
-            edge = f" · +{p['edge_pp']:.0f}pp vs market" if p.get("edge_pp") is not None else ""
+            edge = f" · {p['edge_pp']:+.0f}pp vs market" if p.get("edge_pp") is not None else ""
             lines.append(f"{_tier_tag(p['tier'])} · {p['matchup']} — {p['market']}: {p['pick']} ({conf}{edge})")
         if len(game_picks) > len(shown):
             lines.append(f"_…and {len(game_picks) - len(shown)} more (see the app)_")

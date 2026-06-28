@@ -25,6 +25,10 @@ from mlb_model.logging import get_logger
 
 log = get_logger("model.calibrate")
 
+# No single MLB game is a near-certainty; clamp calibrated probabilities to a
+# sane range so nothing ever reports a literal 0% / 100%.
+_CLAMP_EPS = 0.02
+
 
 @dataclass
 class Calibrator:
@@ -39,12 +43,28 @@ class Calibrator:
         NaN-safe: any non-finite input passes through unchanged so the
         caller can detect "no prediction available" rather than receive a
         misleadingly confident 0/1.
+
+        Anti-saturation guard: isotonic regression on sparse tails can snap a
+        whole high-confidence region to a hard 1.0 (e.g. raw 0.82 -> 1.000),
+        which surfaced as bogus "100% confidence" single-game picks. Since this
+        model is overconfident throughout (the calibrator only ever shrinks raw
+        probabilities toward 0.5 where it has data), we forbid calibration from
+        making a prediction *more extreme* than its raw input — it may regress
+        overconfidence toward a coin flip, never manufacture certainty. A small
+        [eps, 1-eps] clamp is the final backstop.
         """
         p_arr = np.asarray(p, dtype=np.float64)
         finite = np.isfinite(p_arr)
         out = np.full_like(p_arr, np.nan, dtype=np.float64)
         if finite.any():
-            out[finite] = np.clip(self.regressor.predict(p_arr[finite]), 1e-4, 1 - 1e-4)
+            raw = p_arr[finite]
+            cal = self.regressor.predict(raw)
+            # Cap the distance-from-0.5 to the raw input's (no amplification),
+            # keeping the calibrator's direction.
+            dev = np.minimum(np.abs(cal - 0.5), np.abs(raw - 0.5))
+            side = np.where(cal >= 0.5, 1.0, -1.0)
+            capped = 0.5 + side * dev
+            out[finite] = np.clip(capped, _CLAMP_EPS, 1.0 - _CLAMP_EPS)
         return out
 
 
@@ -63,7 +83,10 @@ def fit_calibrator(
     mask = np.isfinite(raw_probs) & np.isfinite(outcomes)
     if mask.sum() < 50:
         log.warning("calibrate.too_few_points", market=market, n=int(mask.sum()))
-    ir = IsotonicRegression(out_of_bounds="clip", y_min=0.0, y_max=1.0)
+    # Bound the fit away from a hard 0/1 so a sparse top/bottom bin can't snap
+    # the calibrator to certainty at the source. (The transform-time guard is
+    # the primary defense; this is belt-and-suspenders for future retrains.)
+    ir = IsotonicRegression(out_of_bounds="clip", y_min=_CLAMP_EPS, y_max=1.0 - _CLAMP_EPS)
     ir.fit(raw_probs[mask], outcomes[mask])
     return Calibrator(market=market, regressor=ir)
 
