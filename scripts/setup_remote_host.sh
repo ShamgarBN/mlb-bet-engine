@@ -35,16 +35,18 @@ if uv run python -c "import lightgbm" >/dev/null 2>&1; then
   ok "lightgbm imports"
 else
   if [[ "$(uname -m)" == "x86_64" ]] && command -v brew >/dev/null 2>&1; then
-    echo "▸ Intel Mac — installing libomp via brew…"
-    brew install libomp || warn "brew install libomp failed; see brew output above"
+    echo "▸ Intel Mac — installing libomp via brew (non-interactive)…"
+    NONINTERACTIVE=1 brew install libomp || warn "brew install libomp failed; see brew output above"
   fi
   echo "▸ Making lightgbm loadable — running scripts/fix_libomp.sh…"
   bash scripts/fix_libomp.sh && ok "libomp installed" || warn "libomp fix failed; check the output above"
 fi
 
 # 4) .env / webhook check
-if [[ -f .env ]] && grep -q "MLB_DISCORD_WEBHOOK_URL=.\+" .env; then
+if [[ -f .env ]] && grep -qE "MLB_DISCORD_WEBHOOK_URL=https://discord(app)?\.com/api/webhooks/[0-9]" .env; then
   ok "Discord webhook configured in .env"
+elif [[ -f .env ]] && grep -q "webhooks/\.\.\." .env; then
+  warn "MLB_DISCORD_WEBHOOK_URL is still the placeholder — paste your real webhook URL."
 else
   warn "No MLB_DISCORD_WEBHOOK_URL in .env — alerts will no-op until you add it."
   warn "  Discord → Edit Channel → Integrations → Webhooks → New Webhook → Copy URL"

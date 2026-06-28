@@ -65,7 +65,7 @@ if [[ -z "${SRC}" ]]; then
   fi
   echo "Fetching a ${NEED_ARCH} libomp bottle…"
   for tag in ${TAGS}; do
-    if brew fetch --force --bottle-tag="${tag}" libomp >/dev/null 2>&1; then
+    if NONINTERACTIVE=1 brew fetch --force --bottle-tag="${tag}" libomp >/dev/null 2>&1; then
       BOTTLE="$(find "$(brew --cache)" -iname "*libomp*${tag}*.bottle.tar.gz" 2>/dev/null | head -1)"
       [[ -n "${BOTTLE}" ]] && { tar -xzf "${BOTTLE}" -C "${WORK}"; CAND="$(find "${WORK}" -name libomp.dylib | head -1)"; file "${CAND}" | grep -q "${NEED_ARCH}" && { SRC="${CAND}"; break; }; }
     fi
