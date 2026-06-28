@@ -31,6 +31,11 @@ slugger_app = typer.Typer(
     help="Track big HR hitters who have gone cold (slumping-slugger analysis)",
 )
 app.add_typer(slugger_app, name="slugger")
+alert_app = typer.Typer(
+    no_args_is_help=True,
+    help="Discord alerts for high-confidence (Premium/Strong) picks",
+)
+app.add_typer(alert_app, name="alert")
 
 console = Console()
 log = get_logger("cli")
@@ -1043,6 +1048,45 @@ def slugger_slumps(
             w.writeheader()
             w.writerows(rows)
         console.print(f"\n[green]Report written →[/green] {path}")
+
+
+@alert_app.command("test")
+def alert_test() -> None:
+    """Send a test message to the configured Discord webhook."""
+    configure_logging()
+    from mlb_model.automation import alerts
+
+    if not settings.discord_webhook_url:
+        console.print(
+            "[red]No webhook configured.[/red] Add MLB_DISCORD_WEBHOOK_URL to your .env "
+            "(Discord → Edit Channel → Integrations → Webhooks → New Webhook → Copy URL)."
+        )
+        raise typer.Exit(code=1)
+    ok = alerts.post_to_discord("✅ MLB Forecast test alert — your webhook is wired up.")
+    console.print("[green]Sent![/green]" if ok else "[red]Failed to post — check logs/.[/red]")
+
+
+@alert_app.command("run")
+def alert_run(
+    date: Annotated[str, typer.Option(help="Slate date (today/yesterday/YYYY-MM-DD)")] = "today",
+    force: Annotated[bool, typer.Option(help="Ignore the per-day 'already sent' marker")] = False,
+    dry_run: Annotated[bool, typer.Option(help="Build + print the message, don't post")] = False,
+) -> None:
+    """Build today's Premium/Strong alert and post it (or preview with --dry-run)."""
+    configure_logging()
+    from mlb_model.automation import alerts
+
+    target = _parse_date(date)
+    with console.status("Gathering high-confidence game + prop picks…"):
+        result = alerts.send_daily_alert(target, force=force, dry_run=dry_run)
+    console.print(
+        f"game picks: {result.get('n_game', 0)} · prop picks: {result.get('n_prop', 0)} · "
+        f"sent: {result.get('sent')}"
+        + (f" · {result['reason']}" if result.get("reason") else "")
+    )
+    if result.get("message"):
+        console.print("\n[dim]--- message ---[/dim]")
+        console.print(result["message"])
 
 
 def main() -> None:  # entry-point alias for [project.scripts]

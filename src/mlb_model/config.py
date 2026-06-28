@@ -57,6 +57,26 @@ class Settings(BaseSettings):
     # total line.
     odds_api_key: str | None = None
 
+    # --- Alerts (Discord) ---
+    # Create a webhook in your Discord channel (Edit Channel → Integrations →
+    # Webhooks → New Webhook → Copy URL) and set MLB_DISCORD_WEBHOOK_URL.
+    # When set, the daily morning sync posts any Premium/Strong game + prop
+    # picks. Without it, the alert step no-ops.
+    discord_webhook_url: str | None = None
+
+    # Cap the alert so it stays a tight "top plays" list, not a wall. Picks are
+    # Premium-first then by edge; the rest are summarized as "+N more". A single
+    # high-K pitcher can make every opposing batter a "1+ K" pick, so the prop
+    # cap matters. Raise these (or set very high) to see everything.
+    alert_max_game_picks: int = 8
+    alert_max_prop_picks: int = 12
+
+    # --- Automation schedule (local time of the Mac) ---
+    # The morning-sync LaunchAgent fires at this hour:minute. Set to ET if you
+    # want "11 AM ET" -- launchd uses the Mac's local timezone.
+    morning_sync_hour: int = 11
+    morning_sync_minute: int = 0
+
     # --- Modeling ---
     # Backtest needs lots of draws to get tight per-game tail estimates
     # we can compare against historical truth; daily inference doesn't

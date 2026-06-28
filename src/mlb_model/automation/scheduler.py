@@ -7,7 +7,8 @@ app is also user-facing).
 
 Two agents are installed:
 
-* ``com.local.mlbforecast.morning-sync`` -- runs every day at 07:00.
+* ``com.local.mlbforecast.morning-sync`` -- runs daily at
+  ``settings.morning_sync_hour:morning_sync_minute`` (default 11:00 local).
 * ``com.local.mlbforecast.weekly-train``  -- runs Sundays at 03:00.
 
 The plist's ``ProgramArguments`` calls ``uv run`` from the project root
@@ -102,10 +103,15 @@ def install() -> dict[str, Path]:
     """Write + load both LaunchAgents. Returns paths keyed by label."""
     uv = _resolve_uv()
 
+    from mlb_model.config import settings
+
     morning_plist = _build_plist(
         MORNING_LABEL,
         args=[uv, "run", "mlb-model", "morning-sync"],
-        calendar_interval={"Hour": 7, "Minute": 0},
+        calendar_interval={
+            "Hour": int(settings.morning_sync_hour),
+            "Minute": int(settings.morning_sync_minute),
+        },
     )
     weekly_plist = _build_plist(
         WEEKLY_LABEL,

@@ -349,7 +349,8 @@ Two background jobs keep the app honest:
   honest: it shows the last *fully successful* run, not just "we attempted
   something", and turns amber/red when the data is stale or only partially
   synced. On macOS, if today's slate contains a premium-tier pick the sync
-  emits a single Notification Center alert (deduped per day).
+  emits a single Notification Center alert (deduped per day). It also posts a
+  **Discord alert** (see below) with the day's Premium/Strong picks.
 - **Weekly retrain** (`mlb-model weekly-train`): on Sundays, archives the
   current model files, refits on a fresh 6-year window, and validates
   the new model against the last 14 days. If the moneyline accuracy
@@ -361,11 +362,56 @@ need cron. To make them run unconditionally at a fixed time, install the
 macOS LaunchAgents:
 
 ```bash
-uv run mlb-model install-schedule      # 07:00 daily + 03:00 Sunday
+uv run mlb-model install-schedule      # morning-sync + 03:00 Sunday retrain
 uv run mlb-model install-schedule --uninstall
 ```
 
-The app footer shows the last successful run of each job.
+The morning-sync time defaults to **11:00 local** — set `MLB_MORNING_SYNC_HOUR`
+/ `MLB_MORNING_SYNC_MINUTE` in `.env` (use ET if you want "11 AM ET";
+LaunchAgents fire in the Mac's local timezone). The app footer shows the last
+successful run of each job.
+
+### Discord alerts for high-confidence picks
+
+Get a daily Discord message with the day's **Premium/Strong** picks — game
+markets (ML/RL/O-U, confidence ≥ 0.50) and hitter props (edge ≥ 5 pp over the
+league baseline). Setup:
+
+1. In Discord: **Edit Channel → Integrations → Webhooks → New Webhook → Copy
+   Webhook URL**.
+2. Add it to `.env`: `MLB_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...`
+3. Verify: `uv run mlb-model alert test` (posts a test message).
+4. It now fires automatically inside `morning-sync` (so `install-schedule`
+   delivers it daily). Preview any day with
+   `uv run mlb-model alert run --dry-run`.
+
+Without a webhook the alert step no-ops. Alerts are deduped once per day and
+capped (Premium-first) at `MLB_ALERT_MAX_GAME_PICKS` / `MLB_ALERT_MAX_PROP_PICKS`
+(defaults 8 / 12) so the message stays a tight "top plays" list. Strikeouts are
+summarized **per starting pitcher** ("estimated K's") rather than as one prop
+per batter, so a high-K starter doesn't flood the message.
+
+#### Running alerts on an always-on host
+
+LaunchAgents only fire while the Mac is awake, so a laptop that sleeps will
+miss the 11 AM run. To run hands-off, put the project on an always-on Mac (a
+Plex Mac Mini, etc.) and let that host do the alerting while your laptop stays
+a local dev copy:
+
+1. **Code** comes from git; the **warehouse + trained models** are gitignored,
+   so move them once with `bash scripts/package_for_transfer.sh --lean` (writes
+   a ~100 MB tarball to your Desktop). Copy it to the host (AirDrop / scp) and
+   extract — or `git clone` and copy just `data/warehouse.duckdb` + `models/`.
+2. On the host, from the project root:
+   ```bash
+   bash scripts/setup_remote_host.sh
+   ```
+   It runs `uv sync`, makes lightgbm loadable, checks your `.env`, and installs
+   the daily LaunchAgent. Add `MLB_DISCORD_WEBHOOK_URL` (and ideally
+   `MLB_ODDS_API_KEY`) to the host's `.env` first.
+3. The host then self-updates its warehouse every morning — no further syncing
+   from the laptop needed. Each machine keeps its own data; they share only code
+   via git.
 
 ### Shipping a standalone .app / DMG to another Mac
 
