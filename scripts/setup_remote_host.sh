@@ -30,14 +30,16 @@ echo "▸ uv sync (this can take a few minutes the first time)…"
 uv sync
 ok "virtualenv ready"
 
-# 3) lightgbm / libomp (Apple Silicon vs Intel)
+# 3) lightgbm / libomp (works on Apple Silicon and Intel)
 if uv run python -c "import lightgbm" >/dev/null 2>&1; then
   ok "lightgbm imports"
-elif [[ "$(uname -m)" == "arm64" ]]; then
-  echo "▸ lightgbm needs OpenMP — running scripts/fix_libomp.sh…"
-  bash scripts/fix_libomp.sh && ok "libomp installed (arm64)"
 else
-  warn "Intel Mac: run 'brew install libomp' (the arm64 helper won't fit), then re-run."
+  if [[ "$(uname -m)" == "x86_64" ]] && command -v brew >/dev/null 2>&1; then
+    echo "▸ Intel Mac — installing libomp via brew…"
+    brew install libomp || warn "brew install libomp failed; see brew output above"
+  fi
+  echo "▸ Making lightgbm loadable — running scripts/fix_libomp.sh…"
+  bash scripts/fix_libomp.sh && ok "libomp installed" || warn "libomp fix failed; check the output above"
 fi
 
 # 4) .env / webhook check
