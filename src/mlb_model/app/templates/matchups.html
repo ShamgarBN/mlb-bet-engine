@@ -58,7 +58,8 @@
       <input type="date" name="date" value="{{ target_date.isoformat() }}"
              onchange="this.form.submit()"
              class="rounded-md border border-chrome-700/60 bg-chrome-800/60 text-chrome-100 px-3 py-1.5 mu-mono text-xs [color-scheme:dark]">
-      <button type="submit" name="refresh" value="true"
+      <button type="button" onclick="refreshAll('{{ target_date.isoformat() }}')"
+              title="Refreshes the entire tool — slate, odds, predictions, props, and the slugger report"
               class="text-xs rounded-md border border-brand-700/60 bg-brand-700/30 hover:bg-brand-700/50 text-brand-100 px-3 py-1.5 mu-cond">
         Refresh
       </button>

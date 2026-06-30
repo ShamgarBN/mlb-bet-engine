@@ -87,6 +87,63 @@ def get_predictions(
     return compute_predictions(target, refresh=refresh)
 
 
+def refresh_all(target: date_cls):
+    """Refresh the *entire* tool for ``target`` and stream progress.
+
+    Runs the full pipeline — yesterday's finals, today's slate/odds + game
+    predictions, hitter-prop matchups, and the slugger report — recomputing
+    every tab's on-disk cache so a single Refresh updates the whole app.
+
+    Yields ``(pct, label)`` with ``pct`` cumulative 0..1. Each step is
+    best-effort: a failure is logged and the rest still run. The weights are
+    rough wall-clock shares so the bar tracks real progress, not step count.
+    """
+    from datetime import timedelta
+
+    today = target
+    yesterday = today - timedelta(days=1)
+
+    def _finals() -> None:
+        from mlb_model.automation.morning_sync import _refresh_finals_for_date
+
+        _refresh_finals_for_date(yesterday)
+
+    def _predictions() -> None:
+        # refresh=True pulls schedule + weather + live odds, then computes &
+        # caches today's game predictions.
+        compute_predictions(today, refresh=True)
+
+    def _matchups() -> None:
+        from mlb_model.journal.props import record_matchups
+        from mlb_model.scoring.service import get_matchups_for_date
+
+        m = get_matchups_for_date(today, refresh=True)
+        if m:
+            record_matchups(m)
+
+    def _slugger() -> None:
+        from mlb_model.app import slugger_service
+
+        slugger_service.compute_snapshot(today.year, as_of=today)
+
+    steps = [
+        ("Refreshing yesterday's results", 0.10, _finals),
+        ("Pulling today's slate, odds & game predictions", 0.45, _predictions),
+        ("Scoring hitter matchups", 0.20, _matchups),
+        ("Building slugger report", 0.25, _slugger),
+    ]
+
+    done = 0.0
+    for label, weight, fn in steps:
+        yield (done, label)  # announce the step (bar holds, label shows what's running)
+        try:
+            fn()
+        except Exception:  # noqa: BLE001 -- one bad step must not abort the rest
+            log.exception("refresh_all.step_failed", step=label)
+        done = min(1.0, done + weight)
+        yield (done, label)
+
+
 # ---------------------------------------------------------------------------
 # Pick shaping for the UI
 # ---------------------------------------------------------------------------

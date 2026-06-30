@@ -121,7 +121,7 @@
           </span>
         </span>
         {% endif %}
-        <span>v{{ '1.9.2' }}</span>
+        <span>v{{ '1.10.0' }}</span>
       </div>
     </div>
   </footer>
@@ -190,6 +190,56 @@
           console.error('log failed', err);
         }
       });
+    })();
+  </script>
+
+  <!-- Full-tool refresh: a single progress overlay any Refresh button drives
+       via window.refreshAll(date). Streams Server-Sent Events from
+       /api/refresh-all, then reloads the current tab so it shows fresh data. -->
+  <div id="refresh-overlay" class="hidden fixed inset-0 z-[60] items-center justify-center bg-chrome-900/80 backdrop-blur-sm">
+    <div class="w-[min(92vw,440px)] rounded-xl border border-chrome-700/60 bg-chrome-800 p-5 shadow-2xl">
+      <div class="flex items-center gap-2 text-sm font-semibold text-white">
+        <svg viewBox="0 0 24 24" class="h-4 w-4 animate-spin text-brand-400" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7"/><polyline points="21 4 21 10 15 10"/></svg>
+        Refreshing everything
+      </div>
+      <div id="refresh-label" class="mt-2 text-xs text-chrome-400 truncate">Starting…</div>
+      <div class="mt-2 h-2 w-full overflow-hidden rounded-full bg-chrome-700/60">
+        <div id="refresh-bar" class="h-full bg-brand-500 transition-[width] duration-300 ease-out" style="width:0%"></div>
+      </div>
+      <div class="mt-1 flex items-center justify-between text-[11px] text-chrome-500">
+        <span id="refresh-pct">0%</span>
+        <button id="refresh-close" class="hidden rounded px-2 py-0.5 text-chrome-300 hover:bg-chrome-700/60" onclick="document.getElementById('refresh-overlay').classList.add('hidden')">Close</button>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      let active = false;
+      window.refreshAll = function (dateStr) {
+        if (active) return;              // guard against double-clicks
+        active = true;
+        const ov = document.getElementById('refresh-overlay');
+        const bar = document.getElementById('refresh-bar');
+        const lab = document.getElementById('refresh-label');
+        const pctEl = document.getElementById('refresh-pct');
+        const closeBtn = document.getElementById('refresh-close');
+        ov.classList.remove('hidden'); ov.classList.add('flex');
+        closeBtn.classList.add('hidden');
+        bar.style.width = '0%'; pctEl.textContent = '0%'; lab.textContent = 'Starting…';
+
+        const url = '/api/refresh-all' + (dateStr ? ('?date=' + encodeURIComponent(dateStr)) : '');
+        const es = new EventSource(url);
+        const finish = (msg) => { active = false; lab.textContent = msg; closeBtn.classList.remove('hidden'); };
+        es.onmessage = (e) => {
+          let d; try { d = JSON.parse(e.data); } catch (_) { return; }
+          if (d.error) { es.close(); finish('Error: ' + d.error); return; }
+          const pct = Math.round((d.pct || 0) * 100);
+          bar.style.width = pct + '%'; pctEl.textContent = pct + '%';
+          if (d.label) lab.textContent = d.label;
+          if (d.done) { es.close(); lab.textContent = 'Done — reloading…'; setTimeout(() => location.reload(), 600); }
+        };
+        es.onerror = () => { es.close(); finish('Connection lost — see logs/.'); };
+      };
     })();
   </script>
 

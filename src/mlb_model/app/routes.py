@@ -18,7 +18,13 @@ from typing import Any
 
 import pandas as pd  # noqa: F401 -- used by route handlers
 from fastapi import APIRouter, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.templating import Jinja2Templates
 
 from mlb_model.app import services
@@ -454,6 +460,37 @@ def api_refresh(
                 ),
             },
         )
+
+
+@router.get("/api/refresh-all")
+def api_refresh_all(date: str | None = Query(default=None)) -> StreamingResponse:
+    """Refresh the whole tool, streaming progress as Server-Sent Events.
+
+    The client (any Refresh button) opens an EventSource here; we stream one
+    ``data:`` line per step with ``{pct, label}`` and a final ``{done:true}``,
+    then it reloads the current tab. Starlette runs this sync generator in a
+    threadpool, so the heavy model work doesn't block the event loop.
+    """
+    import json as _json
+
+    target = _parse_date(date) if date else date_cls.today()
+
+    def event_stream():
+        log.info("ui.refresh_all.start", target=target)
+        try:
+            for pct, label in services.refresh_all(target):
+                yield f"data: {_json.dumps({'pct': round(float(pct), 3), 'label': label})}\n\n"
+            yield f"data: {_json.dumps({'pct': 1.0, 'label': 'Done', 'done': True})}\n\n"
+            log.info("ui.refresh_all.done", target=target)
+        except Exception as exc:  # noqa: BLE001 -- surface to the client, don't 500 mid-stream
+            log.exception("ui.refresh_all.failed", target=target)
+            yield f"data: {_json.dumps({'error': f'{type(exc).__name__}: {exc}'})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/api/game/{game_pk}/distribution")
