@@ -92,6 +92,7 @@
       <div class="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-chrome-900/40 border-b border-chrome-700/60">
         <div class="flex items-center gap-3">
           <span class="mu-cond text-[13px] text-white">{{ g.away_team_abbr }} @ {{ g.home_team_abbr }}</span>
+          <span class="text-xs mu-mono text-chrome-300">{{ g.scheduled_start | gametime }}</span>
           <span class="text-xs text-chrome-400">{{ g.venue_name or '—' }}</span>
         </div>
         <div class="flex items-center gap-2">

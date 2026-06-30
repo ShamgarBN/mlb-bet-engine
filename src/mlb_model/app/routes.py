@@ -12,7 +12,7 @@ is no injection surface against the warehouse.
 
 from __future__ import annotations
 
-from datetime import date as date_cls, datetime, timedelta
+from datetime import date as date_cls, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -70,10 +70,30 @@ def _signed_pp(x: float | None) -> str:
     return f"{x:+.1f}pp"
 
 
+def _gametime(iso: str | None) -> str:
+    """Format a scheduled-start ISO string (stored UTC) as local clock time.
+
+    e.g. "2026-06-30T22:35:00" -> "6:35 PM EDT" on an Eastern machine. Converts
+    to whatever timezone the app is running in, so it reads as the user's local
+    first pitch.
+    """
+    if not iso:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(str(iso))
+    except ValueError:
+        return "—"
+    if dt.tzinfo is None:  # warehouse stores naive UTC
+        dt = dt.replace(tzinfo=timezone.utc)
+    local = dt.astimezone()
+    return local.strftime("%-I:%M %p %Z")
+
+
 templates.env.filters["pct"] = _pct
 templates.env.filters["odds"] = _odds
 templates.env.filters["num"] = _num
 templates.env.filters["signed_pp"] = _signed_pp
+templates.env.filters["gametime"] = _gametime
 
 
 # ---------------------------------------------------------------------------
