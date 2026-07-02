@@ -54,7 +54,13 @@ def select_game_picks(target: date_cls) -> list[dict[str, Any]]:
         return []
     if preds is None or preds.empty:
         return []
-    picks = [p for p in services.shape_picks(preds) if p.tier in ALERT_TIERS]
+    picks = [
+        p for p in services.shape_picks(preds)
+        if p.tier in ALERT_TIERS
+        # Drop O/U picks with no real market total — a "UNDER 9*" against the
+        # league-average baseline isn't a bettable line (no book posted it yet).
+        and not (p.market == "total" and p.total_line_source != "market")
+    ]
     picks.sort(key=lambda p: (p.tier != "premium", -(p.confidence or 0)))
     return [
         {
@@ -258,6 +264,18 @@ def send_daily_alert(
     target = target or date_cls.today()
     if not dry_run and not force and _marker_path(target).exists():
         return {"sent": False, "reason": "already-sent-today"}
+
+    # Ensure fresh market lines are in the warehouse before selecting game
+    # picks, so O/U uses the real posted total instead of the league-average
+    # baseline (which renders with a "*"). Best-effort; no-ops without
+    # MLB_ODDS_API_KEY. Makes a manual `alert run` self-sufficient rather than
+    # depending on morning-sync having ingested odds first.
+    try:
+        from mlb_model.data.sources import odds_api as _odds_api
+
+        _odds_api.ingest_live_slate()
+    except Exception:  # noqa: BLE001 -- odds are best-effort; baseline is the fallback
+        log.warning("alerts.odds.ingest_failed")
 
     game_picks = select_game_picks(target)
     matchups = todays_matchups(target)
