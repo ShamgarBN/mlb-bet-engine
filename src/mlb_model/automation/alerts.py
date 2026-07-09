@@ -165,13 +165,21 @@ def build_message(
     game_picks: list[dict],
     prop_picks: list[dict],
     pitcher_ks: list[dict] | None = None,
+    *,
+    uncapped: bool = False,
 ) -> str | None:
-    """Markdown message body, or None if there's nothing to alert on."""
+    """Markdown message body, or None if there's nothing to alert on.
+
+    ``uncapped`` disables the per-section caps + "…and N more" truncation so
+    the full pick list can be printed (e.g. `alert run --full`) when the Discord
+    message was capped.
+    """
     pitcher_ks = pitcher_ks or []
     if not game_picks and not prop_picks and not pitcher_ks:
         return None
-    max_game = settings.alert_max_game_picks
-    max_prop = settings.alert_max_prop_picks
+    big = 10**9
+    max_game = big if uncapped else settings.alert_max_game_picks
+    max_prop = big if uncapped else settings.alert_max_prop_picks
     when = target.strftime("%a %b %-d")
     lines = [f"**⚾ MLB Forecast — high-confidence picks · {when}**"]
 
@@ -199,7 +207,7 @@ def build_message(
 
     if pitcher_ks:
         lines.append("\n__Pitcher strikeouts (high-K spots)__")
-        for k in pitcher_ks[:12]:
+        for k in pitcher_ks[: (big if uncapped else 12)]:
             lines.append(
                 f"• {k['pitcher']} ({k['team']}, {k['throws']}HP) vs {k['vs_team']} "
                 f"— estimated K's: {k['est_k']}"
@@ -254,12 +262,14 @@ def _marker_path(target: date_cls):
 
 
 def send_daily_alert(
-    target: date_cls | None = None, *, force: bool = False, dry_run: bool = False
+    target: date_cls | None = None, *, force: bool = False, dry_run: bool = False,
+    uncapped: bool = False,
 ) -> dict[str, Any]:
     """Gather Premium/Strong picks and post them. Deduped once per day.
 
     ``force`` ignores the per-day marker; ``dry_run`` builds the message but
-    doesn't post (returns it under ``message``).
+    doesn't post (returns it under ``message``); ``uncapped`` includes every
+    pick (no per-section cap) for terminal printing.
     """
     target = target or date_cls.today()
     if not dry_run and not force and _marker_path(target).exists():
@@ -281,7 +291,7 @@ def send_daily_alert(
     matchups = todays_matchups(target)
     prop_picks = select_prop_picks(matchups)
     pitcher_ks = select_pitcher_strikeouts(matchups)
-    message = build_message(target, game_picks, prop_picks, pitcher_ks)
+    message = build_message(target, game_picks, prop_picks, pitcher_ks, uncapped=uncapped)
     result: dict[str, Any] = {
         "n_game": len(game_picks),
         "n_prop": len(prop_picks),

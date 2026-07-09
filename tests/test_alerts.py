@@ -41,6 +41,14 @@ def test_build_message_caps_long_lists(monkeypatch):
     assert msg.count("PREMIUM") == 2
 
 
+def test_build_message_uncapped_shows_everything(monkeypatch):
+    monkeypatch.setattr(alerts.settings, "alert_max_prop_picks", 2)
+    props = [dict(_PROP[0], player=f"P{i}") for i in range(10)]
+    msg = alerts.build_message(date(2026, 6, 25), [], props, uncapped=True)
+    assert "more" not in msg           # no "…and N more" truncation
+    assert msg.count("PREMIUM") == 10  # all 10 listed
+
+
 def test_chunk_respects_limit():
     long = "\n".join([f"line {i} " + "x" * 80 for i in range(100)])
     chunks = alerts._chunk(long, limit=500)

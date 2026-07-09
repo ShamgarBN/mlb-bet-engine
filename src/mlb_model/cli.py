@@ -1071,14 +1071,29 @@ def alert_run(
     date: Annotated[str, typer.Option(help="Slate date (today/yesterday/YYYY-MM-DD)")] = "today",
     force: Annotated[bool, typer.Option(help="Ignore the per-day 'already sent' marker")] = False,
     dry_run: Annotated[bool, typer.Option(help="Build + print the message, don't post")] = False,
+    full: Annotated[
+        bool,
+        typer.Option(help="Print the FULL uncapped pick list to the terminal (never posts)"),
+    ] = False,
 ) -> None:
-    """Build today's Premium/Strong alert and post it (or preview with --dry-run)."""
+    """Build today's Premium/Strong alert and post it (or preview with --dry-run).
+
+    Use --full when the Discord message was capped ("…and N more") to print the
+    complete list here — it never posts, just prints.
+    """
     configure_logging()
     from mlb_model.automation import alerts
 
     target = _parse_date(date)
+    # --full is a local, read-only listing: force so it isn't skipped by the
+    # daily marker, and never post (dry_run) — just print everything.
     with console.status("Gathering high-confidence game + prop picks…"):
-        result = alerts.send_daily_alert(target, force=force, dry_run=dry_run)
+        result = alerts.send_daily_alert(
+            target,
+            force=force or full,
+            dry_run=dry_run or full,
+            uncapped=full,
+        )
     console.print(
         f"game picks: {result.get('n_game', 0)} · prop picks: {result.get('n_prop', 0)} · "
         f"sent: {result.get('sent')}"
