@@ -7,8 +7,11 @@ request budget. Best used for:
 * opening lines for line-movement features on current games
 
 Requires an API key in ``MLB_ODDS_API_KEY`` env var (free signup at
-https://the-odds-api.com/). All calls are best-effort; failures log
-and return 0 so they never break a pipeline.
+https://the-odds-api.com/). The var accepts a comma-separated list of
+keys: when the active key's monthly quota runs out (HTTP 401
+``OUT_OF_USAGE_CREDITS``) the fetch fails over to the next key in the
+list. All calls are best-effort; failures log and return 0 so they
+never break a pipeline.
 
 Notes on the API:
 * ``sport`` for MLB is ``baseball_mlb``.
@@ -37,11 +40,14 @@ _SPORT = "baseball_mlb"
 _DEFAULT_BOOKS = "draftkings,fanduel,betmgm,caesars,pinnacle"
 
 
-def _api_key() -> str | None:
-    """Read the API key from settings (which loads PROJECT_ROOT/.env) and
+def _api_keys() -> list[str]:
+    """Read the API key(s) from settings (which loads PROJECT_ROOT/.env) and
     fall back to the raw env var so an exported shell variable still works.
+
+    Accepts a comma-separated list; order is priority order for failover.
     """
-    return settings.odds_api_key or os.environ.get("MLB_ODDS_API_KEY")
+    raw = settings.odds_api_key or os.environ.get("MLB_ODDS_API_KEY") or ""
+    return [k.strip() for k in raw.split(",") if k.strip()]
 
 
 def _short_team(name: str) -> str | None:
@@ -76,26 +82,59 @@ def _best_market(bookmakers: list[dict], market_key: str) -> dict | None:
 
 def fetch_live_slate(books: str = _DEFAULT_BOOKS) -> pd.DataFrame:
     """Pull live odds for upcoming + in-progress MLB games. Returns warehouse-shaped rows."""
-    key = _api_key()
-    if not key:
+    keys = _api_keys()
+    if not keys:
         log.info("odds_api.no_api_key")
         return pd.DataFrame()
 
     url = f"{_BASE_URL}/sports/{_SPORT}/odds"
-    params = {
-        "apiKey": key,
-        "regions": "us",
-        "markets": "h2h,spreads,totals",
-        "oddsFormat": "decimal",
-        "bookmakers": books,
-    }
-    try:
-        with httpx.Client(timeout=20.0) as c:
-            resp = c.get(url, params=params)
-            resp.raise_for_status()
-            payload = resp.json()
-    except Exception:
-        log.exception("odds_api.fetch_failed")
+    payload = None
+    for idx, key in enumerate(keys, start=1):
+        params = {
+            "apiKey": key,
+            "regions": "us",
+            "markets": "h2h,spreads,totals",
+            "oddsFormat": "decimal",
+            "bookmakers": books,
+        }
+        try:
+            with httpx.Client(timeout=20.0) as c:
+                resp = c.get(url, params=params)
+        except Exception as exc:
+            # Log the exception type only -- httpx error messages embed the
+            # request URL, which carries the API key.
+            log.error("odds_api.request_failed", key_index=idx, error=type(exc).__name__)
+            return pd.DataFrame()
+
+        # 401 = quota exhausted (OUT_OF_USAGE_CREDITS) or bad key;
+        # 429 = per-key rate limit. Both are key-specific -> next key.
+        if resp.status_code in (401, 429):
+            try:
+                error_code = resp.json().get("error_code")
+            except Exception:
+                error_code = None
+            log.warning(
+                "odds_api.key_rejected",
+                key_index=idx, keys_total=len(keys),
+                status=resp.status_code, error_code=error_code,
+            )
+            continue
+        if resp.status_code != 200:
+            log.error("odds_api.http_error", key_index=idx, status=resp.status_code)
+            return pd.DataFrame()
+
+        payload = resp.json()
+        remaining = resp.headers.get("x-requests-remaining")
+        if idx > 1:
+            log.warning(
+                "odds_api.failover_used", key_index=idx, credits_remaining=remaining,
+            )
+        else:
+            log.info("odds_api.fetched", credits_remaining=remaining)
+        break
+
+    if payload is None:
+        log.error("odds_api.all_keys_exhausted", keys_total=len(keys))
         return pd.DataFrame()
 
     rows: list[dict] = []

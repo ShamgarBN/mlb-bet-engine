@@ -54,7 +54,9 @@ class Settings(BaseSettings):
     # credits/month which is plenty for one live-slate pull per day
     # (~3 credits / call). Without a key, live odds ingest no-ops and
     # the predict pipeline falls back to a league-average baseline
-    # total line.
+    # total line. Accepts a comma-separated list of keys; when the
+    # active key's monthly quota runs out, fetches fail over to the
+    # next key in the list.
     odds_api_key: str | None = None
 
     # --- Alerts (Discord) ---
