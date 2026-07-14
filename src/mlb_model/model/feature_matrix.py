@@ -139,11 +139,14 @@ def transform(df: pd.DataFrame, spec: FeatureSpec) -> pd.DataFrame:
     listed in ``spec`` is finite float64.
     """
     out = df.copy()
+    # Missing columns are collected and appended in one concat -- inserting
+    # them one at a time fragments the frame and pandas warns loudly.
+    missing: dict[str, float] = {}
     for c in spec.all_cols():
         if c in CATEGORICAL_COLS:
             continue
         if c not in out.columns:
-            out[c] = spec.medians.get(c, 0.0)
+            missing[c] = spec.medians.get(c, 0.0)
             continue
         fill = spec.medians.get(c, 0.0)
         col = out[c]
@@ -152,6 +155,10 @@ def transform(df: pd.DataFrame, spec: FeatureSpec) -> pd.DataFrame:
         else:
             # object / mixed -- coerce safely and fill any non-numeric.
             out[c] = pd.to_numeric(col, errors="coerce").astype("float64").fillna(fill)
+    if missing:
+        out = pd.concat(
+            [out, pd.DataFrame(missing, index=out.index, dtype="float64")], axis=1
+        )
 
     # One-hot the small set of known categoricals.
     for c in CATEGORICAL_COLS:
@@ -186,9 +193,11 @@ def build_runs_matrix(features: pd.DataFrame, spec: FeatureSpec) -> tuple[np.nda
     locked_cols = getattr(spec, "final_feature_cols", None)
     if locked_cols:
         feature_cols = list(locked_cols)
-        for c in feature_cols:
-            if c not in transformed.columns:
-                transformed[c] = 0.0
+        # Batch the zero-fill for unseen dummies -- one concat, no fragmentation.
+        absent = [c for c in feature_cols if c not in transformed.columns]
+        if absent:
+            zeros = pd.DataFrame(0.0, index=transformed.index, columns=absent)
+            transformed = pd.concat([transformed, zeros], axis=1)
     else:
         feature_cols = (
             spec.home_feature_cols + spec.away_feature_cols + spec.game_feature_cols
