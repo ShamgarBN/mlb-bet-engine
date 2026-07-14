@@ -126,11 +126,17 @@ def _grade_row(row: pd.Series) -> str:
 
     if market == "runline":
         diff_home = hs - as_  # positive = home won by N
-        # Home -1.5 covers if home wins by 2+; Away +1.5 covers if away
-        # loses by 1 or wins.
-        if pick == "HOME":
-            return "win" if diff_home >= 2 else "loss"
-        return "win" if diff_home <= 1 else "loss"  # AWAY +1.5
+        # Grade against the line recorded with the pick. Legacy rows
+        # (no rl_line) predate market framing and were always home -1.5 /
+        # away +1.5, so default to that.
+        line = row.get("rl_line")
+        if line is None or pd.isna(line):
+            line = -1.5 if pick == "HOME" else 1.5
+        margin = diff_home if pick == "HOME" else -diff_home
+        adj = margin + float(line)
+        if adj == 0:
+            return "push"
+        return "win" if adj > 0 else "loss"
 
     if market == "total":
         if total_line is None or pd.isna(total_line):

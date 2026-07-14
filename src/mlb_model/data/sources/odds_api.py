@@ -38,6 +38,9 @@ log = get_logger("data.sources.odds_api")
 _BASE_URL = "https://api.the-odds-api.com/v4"
 _SPORT = "baseball_mlb"
 _DEFAULT_BOOKS = "draftkings,fanduel,betmgm,caesars,pinnacle"
+# The user bets primarily at FanDuel, so its quotes win when it posts a
+# market; other books are fallbacks in this order.
+_BOOK_PRIORITY = ("fanduel", "draftkings", "betmgm", "caesars", "pinnacle")
 
 
 def _api_keys() -> list[str]:
@@ -72,8 +75,16 @@ def _american(price: float | None) -> int | None:
 
 
 def _best_market(bookmakers: list[dict], market_key: str) -> dict | None:
-    """Pick the first bookmaker that quoted ``market_key`` and return its outcomes."""
-    for bm in bookmakers:
+    """Return ``market_key`` outcomes from the highest-priority book quoting it.
+
+    Priority follows ``_BOOK_PRIORITY`` (FanDuel first); books not in the
+    list rank last in response order.
+    """
+    def _rank(bm: dict) -> int:
+        key = bm.get("key")
+        return _BOOK_PRIORITY.index(key) if key in _BOOK_PRIORITY else len(_BOOK_PRIORITY)
+
+    for bm in sorted(bookmakers, key=_rank):
         for m in bm.get("markets", []):
             if m.get("key") == market_key and m.get("outcomes"):
                 return {"bookmaker": bm.get("key"), "outcomes": m["outcomes"]}

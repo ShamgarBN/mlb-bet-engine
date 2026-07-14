@@ -38,7 +38,10 @@ class GamePrediction:
     pred_home_runs: float
     pred_away_runs: float
     p_home_win: float
-    p_home_runline_cover: float   # home -1.5
+    # P(home covers ITS line). The line is the game's market home runline
+    # when supplied to ``simulate_games`` (-1.5 if home is the favorite,
+    # +1.5 if the away team is), else the historical default of home -1.5.
+    p_home_runline_cover: float
     p_total_over: float
     total_line: float | None
     runs_std_home: float
@@ -104,6 +107,7 @@ def simulate_games(
     *,
     total_lines: np.ndarray | None = None,
     runline: float = 1.5,
+    home_rl_lines: np.ndarray | None = None,
     n_sims: int = 50_000,
     seed: int | None = None,
 ) -> list[GamePrediction]:
@@ -114,7 +118,13 @@ def simulate_games(
         pred_home: (means, stds) for home runs.
         pred_away: (means, stds) for away runs.
         total_lines: O/U total per game (for P(over)). NaN-safe.
-        runline: Spread magnitude (default 1.5).
+        runline: Spread magnitude when no per-game line is given (default
+            1.5, framed as home -1.5). Training/backtest use this fixed
+            frame so the calibrator has a stable definition.
+        home_rl_lines: Per-game HOME runline points from the market
+            (-1.5 when home is favorite, +1.5 when away is). NaN entries
+            fall back to ``-runline``. When given, ``p_home_runline_cover``
+            is P(home covers its actual market line).
         n_sims: Monte Carlo draws per game.
         seed: RNG seed (defaults to settings.random_seed).
     """
@@ -156,7 +166,13 @@ def simulate_games(
         home_draws = home_draws + ties * coin
 
     home_win = (home_draws > away_draws).mean(axis=0)
-    home_rl_cover = (home_draws - away_draws > runline).mean(axis=0)
+    # Home covers its line L when margin + L > 0. With the default
+    # L = -runline (-1.5) this is the historical margin > 1.5.
+    if home_rl_lines is None:
+        lines = np.full(n_games, -runline)
+    else:
+        lines = np.where(np.isfinite(home_rl_lines), home_rl_lines, -runline)
+    home_rl_cover = (home_draws - away_draws > -lines).mean(axis=0)
     totals_sim = home_draws + away_draws
 
     predictions: list[GamePrediction] = []

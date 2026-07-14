@@ -175,6 +175,11 @@ class PickRow:
     # back to the league-average. The UI shows this so the user can
     # weight totals picks accordingly.
     total_line_source: str | None = None
+    # Runline point for the PICKED team (e.g. -1.5 on the favorite,
+    # +1.5 on the dog) and whether it came from the market or was the
+    # assumed home -1.5 fallback. None on non-runline rows.
+    rl_line: float | None = None
+    rl_line_source: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = self.__dict__.copy()
@@ -259,13 +264,25 @@ def shape_picks(df: pd.DataFrame) -> list[PickRow]:
             )
         )
 
-        # Run line (always home -1.5 / away +1.5). When the de-vigged
-        # market RL probability exists, surface it + the edge.
+        # Run line, framed around the market's line: p_home_runline_cover
+        # is P(home covers rl_line_home), where rl_line_home is -1.5 when
+        # home is the market favorite and +1.5 when the away team is
+        # (assumed -1.5 only when no market line exists). When the
+        # de-vigged market RL probability exists, surface it + the edge.
+        rl_line_home = (
+            float(r["rl_line_home"])
+            if "rl_line_home" in r.index and pd.notna(r.get("rl_line_home"))
+            else -1.5
+        )
+        rl_line_source = (
+            str(r["rl_line_source"])
+            if "rl_line_source" in r.index and pd.notna(r.get("rl_line_source"))
+            else "assumed"
+        )
         rl_side = "HOME" if p_rl >= 0.5 else "AWAY"
         rl_prob = max(p_rl, 1 - p_rl)
-        rl_long = (
-            f"{home} -1.5" if rl_side == "HOME" else f"{away} +1.5"
-        )
+        rl_line = rl_line_home if rl_side == "HOME" else -rl_line_home
+        rl_long = f"{home if rl_side == 'HOME' else away} {rl_line:+g}"
         market_rl_home = (
             float(r["market_rl_home_close_prob"])
             if "market_rl_home_close_prob" in r.index and pd.notna(r.get("market_rl_home_close_prob"))
@@ -290,6 +307,7 @@ def shape_picks(df: pd.DataFrame) -> list[PickRow]:
                 p_home_win=p_ml, p_home_runline_cover=p_rl,
                 p_total_over=p_ou, total_line=total_line,
                 total_line_source=total_line_source,
+                rl_line=rl_line, rl_line_source=rl_line_source,
             )
         )
 
@@ -370,6 +388,9 @@ class GameDetail:
     weather: dict[str, Any]
     score_distribution: dict[str, Any]
     feature_panel: list[dict[str, Any]]
+    # Home team's runline point (-1.5 or +1.5) and where it came from.
+    rl_line_home: float = -1.5
+    rl_line_source: str = "assumed"
 
 
 def p_total_over_at_line(
@@ -493,6 +514,16 @@ def get_game_detail(target: date_cls, game_pk: int) -> GameDetail | None:
         p_total_over=float(r["p_total_over"]) if pd.notna(r["p_total_over"]) else None,
         total_line=eff_total_line,
         total_line_source=line_source,
+        rl_line_home=(
+            float(r["rl_line_home"])
+            if "rl_line_home" in r.index and pd.notna(r.get("rl_line_home"))
+            else -1.5
+        ),
+        rl_line_source=(
+            str(r["rl_line_source"])
+            if "rl_line_source" in r.index and pd.notna(r.get("rl_line_source"))
+            else "assumed"
+        ),
         market_ml_home_prob=float(r["market_ml_home_close_prob"]) if pd.notna(r["market_ml_home_close_prob"]) else None,
         home_sp_id=int(r["home_sp_id"]) if pd.notna(r["home_sp_id"]) else None,
         away_sp_id=int(r["away_sp_id"]) if pd.notna(r["away_sp_id"]) else None,
@@ -905,8 +936,16 @@ def _grade_picks(picks: pd.DataFrame) -> pd.DataFrame:
             won = (hs > as_) == (row["pick"] == "HOME")
         elif market == "runline":
             margin = float(row["home_score"]) - float(row["away_score"])
-            home_covers = margin > 1.5
-            won = home_covers == (row["pick"] == "HOME")
+            # Grade against the line stored with the pick; legacy rows
+            # (no rl_line) were always home -1.5 / away +1.5.
+            line = row.get("rl_line")
+            if line is None or pd.isna(line):
+                line = -1.5 if row["pick"] == "HOME" else 1.5
+            picked_margin = margin if row["pick"] == "HOME" else -margin
+            adj = picked_margin + float(line)
+            if adj == 0:
+                return "push"
+            won = adj > 0
         elif market == "total":
             total = float(row["home_score"]) + float(row["away_score"])
             line = float(row.get("total_line", float("nan")))

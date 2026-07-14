@@ -52,6 +52,8 @@ JOURNAL_COLUMNS = [
     "edge_pp",                # model_prob - market_prob (percentage points), NaN if no market
     "total_line",             # the line we were predicting against (NaN if not a totals row)
     "total_line_source",      # 'market' | 'baseline'
+    "rl_line",                # runline point for the PICKED team (e.g. -1.5), NaN if not a runline row
+    "rl_line_source",         # 'market' | 'assumed'
     "confidence",             # |p - 0.5| * 2  in [0, 1]
     "tier",                   # confidence tier label
 ]
@@ -181,16 +183,39 @@ def record_predictions_from_df(predictions: pd.DataFrame) -> int:
             confidence=abs(p_home - 0.5) * 2.0,
         ))
 
-        # Run line.
+        # Run line. ``p_home_runline_cover`` is P(home covers ITS line):
+        # the market's home line when available (rl_line_home), else the
+        # assumed home -1.5. The picked team's line is recorded so grading
+        # scores the bet the book actually posted.
         p_rl = float(r["p_home_runline_cover"])
+        rl_line_home = (
+            float(r["rl_line_home"]) if pd.notna(r.get("rl_line_home")) else -1.5
+        )
+        rl_line_source = (
+            str(r["rl_line_source"]) if pd.notna(r.get("rl_line_source")) else "assumed"
+        )
         rl_side = "HOME" if p_rl >= 0.5 else "AWAY"
         rl_prob = max(p_rl, 1 - p_rl)
-        rl_long = f"{home} -1.5" if rl_side == "HOME" else f"{away} +1.5"
+        rl_line = rl_line_home if rl_side == "HOME" else -rl_line_home
+        rl_team = home if rl_side == "HOME" else away
+        rl_long = f"{rl_team} {rl_line:+g}"
+        market_rl_home = (
+            float(r["market_rl_home_close_prob"])
+            if pd.notna(r.get("market_rl_home_close_prob"))
+            else None
+        )
+        rl_market_prob = (
+            (market_rl_home if rl_side == "HOME" else 1 - market_rl_home)
+            if market_rl_home is not None
+            else None
+        )
+        rl_edge = (rl_prob - rl_market_prob) * 100 if rl_market_prob is not None else None
         rows.append(_journal_row(
             now, game_pk, game_date, away, home,
             market="runline", pick=rl_side, pick_long=rl_long,
-            model_prob=rl_prob, market_prob=None, edge_pp=None,
+            model_prob=rl_prob, market_prob=rl_market_prob, edge_pp=rl_edge,
             total_line=None, total_line_source=None,
+            rl_line=rl_line, rl_line_source=rl_line_source,
             confidence=abs(p_rl - 0.5) * 2.0,
         ))
 
@@ -239,6 +264,8 @@ def _journal_row(
     total_line: float | None,
     total_line_source: str | None,
     confidence: float,
+    rl_line: float | None = None,
+    rl_line_source: str | None = None,
 ) -> dict:
     tier = _confidence_tier(confidence)
     return {
@@ -256,6 +283,8 @@ def _journal_row(
         "edge_pp": float(edge_pp) if edge_pp is not None else None,
         "total_line": float(total_line) if total_line is not None else None,
         "total_line_source": total_line_source,
+        "rl_line": float(rl_line) if rl_line is not None else None,
+        "rl_line_source": rl_line_source,
         "confidence": float(confidence),
         "tier": tier,
     }

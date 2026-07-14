@@ -174,6 +174,18 @@ def predict_for_date(target_date: date_cls, *, refresh_data: bool = True) -> pd.
     baseline = float(league_avg_total(int(target_date.year)))
     total_line_source = np.where(np.isfinite(market_total), "market", "baseline")
     total_lines = np.where(np.isfinite(market_total), market_total, baseline)
+
+    # Runline framing: use the market's home line (-1.5 when home is the
+    # favorite, +1.5 when the away team is) so we never offer a side the
+    # book doesn't post. Fall back to the historical home -1.5 assumption
+    # only when no market line exists.
+    if "market_rl_home_close" in rows.columns:
+        market_rl = rows["market_rl_home_close"].astype("float64").to_numpy()
+    else:
+        market_rl = np.full(len(rows), np.nan)
+    rl_line_home = np.where(np.isfinite(market_rl), market_rl, -1.5)
+    rl_line_source = np.where(np.isfinite(market_rl), "market", "assumed")
+
     # Daily inference uses the faster (still accurate) draw count --
     # see ``monte_carlo_iterations_inference`` for rationale.
     preds = simulate_games(
@@ -181,6 +193,7 @@ def predict_for_date(target_date: date_cls, *, refresh_data: bool = True) -> pd.
         pred_home=(home_mean, home_std),
         pred_away=(away_mean, away_std),
         total_lines=total_lines,
+        home_rl_lines=rl_line_home,
         n_sims=settings.monte_carlo_iterations_inference,
         seed=settings.random_seed,
     )
@@ -202,6 +215,10 @@ def predict_for_date(target_date: date_cls, *, refresh_data: bool = True) -> pd.
 
     pred_df = pd.DataFrame([p.__dict__ for p in preds])
     pred_df["total_line_source"] = total_line_source
+    # Runline framing context (aligned with ``rows``/``preds`` order):
+    # the home team's line and whether it came from the market.
+    pred_df["rl_line_home"] = rl_line_home
+    pred_df["rl_line_source"] = rl_line_source
 
     # Apply calibrators if available. The totals calibrator is special:
     # it was trained on direct-classifier p_over values (centered ~0.50)
@@ -226,6 +243,15 @@ def predict_for_date(target_date: date_cls, *, refresh_data: bool = True) -> pd.
         if market == "total":
             calibrated = cal.transform(raw)
             pred_df[market_col] = np.where(market_line_mask, calibrated, raw)
+        elif market == "runline":
+            # The calibrator was trained on the fixed home -1.5 frame
+            # (P(team covers -1.5)). For games where the market posts
+            # home +1.5, our raw prob is P(home +1.5) = 1 - P(away -1.5);
+            # calibrate the away -1.5 complement and mirror back so the
+            # calibrator always sees the event family it was trained on.
+            cal_home_frame = cal.transform(raw)
+            cal_away_frame = 1.0 - cal.transform(1.0 - raw)
+            pred_df[market_col] = np.where(rl_line_home < 0, cal_home_frame, cal_away_frame)
         else:
             pred_df[market_col] = cal.transform(raw)
 

@@ -26,7 +26,9 @@
     {% set ml_team = g.home_team_abbr if ml_pick == 'HOME' else g.away_team_abbr %}
     {% set rl_pick = 'HOME' if g.p_home_runline_cover >= 0.5 else 'AWAY' %}
     {% set rl_prob = g.p_home_runline_cover if rl_pick == 'HOME' else (1 - g.p_home_runline_cover) %}
-    {% set rl_pick_long = (g.home_team_abbr ~ ' -1.5') if rl_pick == 'HOME' else (g.away_team_abbr ~ ' +1.5') %}
+    {% set rl_home_line = g.rl_line_home if g.rl_line_home is defined else -1.5 %}
+    {% set rl_pick_line = rl_home_line if rl_pick == 'HOME' else -rl_home_line %}
+    {% set rl_pick_long = (g.home_team_abbr if rl_pick == 'HOME' else g.away_team_abbr) ~ ' ' ~ ('%+g' | format(rl_pick_line)) %}
 
     <!-- Moneyline -->
     <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5">
@@ -47,7 +49,7 @@
 
     <!-- Run line -->
     <div class="rounded-xl border border-chrome-700/60 bg-chrome-800/60 p-5">
-      <div class="text-[11px] uppercase tracking-widest text-chrome-500">Run line (−1.5)</div>
+      <div class="text-[11px] uppercase tracking-widest text-chrome-500">Run line ({{ '%+g' | format(rl_home_line) }} home{{ '' if (g.rl_line_source is defined and g.rl_line_source == 'market') else ', assumed' }})</div>
       <div class="mt-1.5 flex items-baseline justify-between">
         <div class="text-2xl font-semibold text-white font-mono">{{ rl_pick_long }}</div>
         <div class="text-xl font-mono text-brand-300">{{ rl_prob | pct }}</div>

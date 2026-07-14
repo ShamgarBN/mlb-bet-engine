@@ -145,6 +145,10 @@ def build_market_features(season_start: int, season_end: int) -> pd.DataFrame:
 
     df["market_ml_movement_home"] = df["ml_close_home"].fillna(0) - df["ml_open_home"].fillna(0)
     df["market_rl_home_close_price"] = df["rl_close_home_price"]
+    # The home team's runline POINT (-1.5 when home is the market favorite,
+    # +1.5 when the away team is). The pick layer frames the runline around
+    # this so we never offer a side the book doesn't actually post.
+    df["market_rl_home_close"] = df["rl_close_home"]
     df["market_total_close"] = df["total_close"]
 
     keep = [
@@ -153,6 +157,7 @@ def build_market_features(season_start: int, season_end: int) -> pd.DataFrame:
         "market_rl_home_close_prob", "market_rl_away_close_prob",
         "market_total_over_close_prob", "market_total_under_close_prob",
         "market_ml_movement_home", "market_rl_home_close_price",
+        "market_rl_home_close",
         "market_total_close",
     ]
     out = df[keep].copy()
