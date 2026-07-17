@@ -369,3 +369,57 @@ def test_headline_age_days():
     )
     age = h.age_days(now=datetime(2026, 6, 22, tzinfo=timezone.utc))
     assert age == 10.0
+
+
+# --------------------------------------------------------------------------- #
+# Absence heuristic (team-games-missed, not calendar days)                     #
+# --------------------------------------------------------------------------- #
+def test_absent_when_team_played_without_him():
+    # Idle 5 days while the team played 4 games -> benched/hidden-IL signal.
+    assert ss.absence_verdict(5, 4) is True
+
+
+def test_not_absent_during_league_wide_break():
+    # All-Star break: idle 5 days but the TEAM played 0 games. Not absent.
+    assert ss.absence_verdict(5, 0) is False
+
+
+def test_not_absent_under_calendar_prefilter():
+    # Two idle days never counts, regardless of team games.
+    assert ss.absence_verdict(2, 2) is False
+    assert ss.absence_verdict(None, 5) is False
+
+
+def test_unknown_schedule_falls_back_to_calendar():
+    # Schedule fetch failed (games_missed None): keep the old behavior.
+    assert ss.absence_verdict(6, None) is True
+
+
+def test_absence_games_threshold_edge():
+    assert ss.absence_verdict(4, 3) is True
+    assert ss.absence_verdict(4, 2) is False
+
+
+def test_team_completed_game_dates_filters_status(monkeypatch):
+    from datetime import date
+
+    sched = [
+        {"game_date": "2026-07-10", "status": "Final"},
+        {"game_date": "2026-07-11", "status": "Postponed"},
+        {"game_date": "2026-07-12", "status": "Completed Early: Rain"},
+        {"game_date": "2026-07-17", "status": "Scheduled"},
+        {"game_date": None, "status": "Final"},
+    ]
+    monkeypatch.setattr(matchups.statsapi, "schedule", lambda **kw: sched)
+    got = matchups.team_completed_game_dates(1, date(2026, 7, 1), date(2026, 7, 17))
+    assert got == [date(2026, 7, 10), date(2026, 7, 12)]
+
+
+def test_team_completed_game_dates_none_on_fetch_failure(monkeypatch):
+    from datetime import date
+
+    def boom(**kw):
+        raise RuntimeError("api down")
+
+    monkeypatch.setattr(matchups.statsapi, "schedule", boom)
+    assert matchups.team_completed_game_dates(1, date(2026, 7, 1), date(2026, 7, 17)) is None

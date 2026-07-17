@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import statsapi
@@ -388,6 +388,31 @@ def last_hr_date(gamelog: list[GameLogEntry]) -> date | None:
 # --------------------------------------------------------------------------- #
 # 4. Assemble the slumping-slugger report
 # --------------------------------------------------------------------------- #
+def absence_verdict(
+    days_since: int | None,
+    games_missed: int | None,
+    *,
+    absence_days: int = 4,
+    absence_games: int = 3,
+) -> bool:
+    """Is a player "absent" (hidden IL stint / benching signal)?
+
+    Absent = idle for ``absence_days``+ calendar days AND the team played
+    ``absence_games``+ games without him. Calendar days alone can't tell a
+    benched player from a paused league — the All-Star break idles everyone
+    for 4-5 days and used to flag the entire majors as absent. Counting
+    TEAM games missed is break-proof and a sharper signal.
+
+    ``games_missed`` is None when the team schedule couldn't be fetched;
+    fall back to the calendar-only heuristic in that case.
+    """
+    if days_since is None or days_since < absence_days:
+        return False
+    if games_missed is None:
+        return True
+    return games_missed >= absence_games
+
+
 def find_slumping_sluggers(
     season: int,
     *,
@@ -395,6 +420,7 @@ def find_slumping_sluggers(
     min_drought: int = DEFAULT_MIN_DROUGHT,
     as_of: date | None = None,
     absence_days: int = 4,
+    absence_games: int = 3,
     with_news: bool = True,
     with_matchups: bool = True,
     hitters: list[HitterSeason] | None = None,
@@ -402,13 +428,31 @@ def find_slumping_sluggers(
     """Find threshold sluggers in a HR drought of ``min_drought``+ games.
 
     A player is also flagged (and reported regardless of drought length) when
-    they have not appeared in ``absence_days``+ days — an absence usually means
-    an IL stint or benching, which is exactly the "external factor" signal.
+    absent: idle ``absence_days``+ calendar days while his team played
+    ``absence_games``+ games without him (see :func:`absence_verdict`) — an
+    absence usually means an IL stint or benching, which is exactly the
+    "external factor" signal.
     """
     as_of = as_of or date.today()
     hitters = hitters if hitters is not None else fetch_season_hitting(season)
     sluggers = [h for h in hitters if h.home_runs >= threshold]
     log.info("slugger.universe", n=len(sluggers), threshold=threshold)
+
+    # Team schedules for the absence check, fetched lazily and cached per
+    # team (only players past the calendar prefilter need one).
+    sched_cache: dict[int, list[date] | None] = {}
+
+    def _games_missed(team_id: int | None, last_game: date) -> int | None:
+        if team_id is None:
+            return None
+        if team_id not in sched_cache:
+            sched_cache[team_id] = matchups.team_completed_game_dates(
+                team_id, as_of - timedelta(days=30), as_of
+            )
+        dates = sched_cache[team_id]
+        if dates is None:
+            return None
+        return sum(1 for d in dates if d > last_game)
 
     flagged: list[tuple[HitterSeason, SluggerStatus]] = []
     for h in sluggers:
@@ -416,7 +460,14 @@ def find_slumping_sluggers(
         drought = hr_drought(glog)
         last_game = glog[-1].game_date if glog else None
         days_since = (as_of - last_game).days if last_game else None
-        is_absent = days_since is not None and days_since >= absence_days
+        is_absent = False
+        if days_since is not None and days_since >= absence_days:
+            is_absent = absence_verdict(
+                days_since,
+                _games_missed(h.team_id, last_game),
+                absence_days=absence_days,
+                absence_games=absence_games,
+            )
 
         # Flag if cold (drought) OR absent. An absent player has a frozen
         # drought count but is the most interesting case for the user.

@@ -34,6 +34,38 @@ _STARTED_OR_DONE = {
     "Postponed", "Cancelled",
 }
 
+# Statuses that count as a game the team actually PLAYED (for absence
+# checks): a benched player misses these; nobody misses a postponement.
+_COMPLETED = {"Final", "Game Over", "Completed Early"}
+
+
+def team_completed_game_dates(team_id: int, start: date, end: date) -> list[date] | None:
+    """Dates of the team's completed games in ``[start, end]``.
+
+    Powers the slugger absence check: "how many games has the team played
+    without this player?". Returns None (not []) when the schedule fetch
+    fails so callers can distinguish "no games" from "don't know".
+    """
+    try:
+        sched = statsapi.schedule(
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            team=int(team_id),
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("matchup.schedule.fetch_failed", team_id=int(team_id))
+        return None
+    out: list[date] = []
+    for g in sched:
+        status = str(g.get("status", ""))
+        if status not in _COMPLETED and not status.startswith("Completed"):
+            continue
+        try:
+            out.append(date.fromisoformat(str(g.get("game_date"))[:10]))
+        except (TypeError, ValueError):
+            continue
+    return out
+
 
 @dataclass(slots=True)
 class PitcherProfile:
