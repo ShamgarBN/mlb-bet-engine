@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     # want "11 AM ET" -- launchd uses the Mac's local timezone.
     morning_sync_hour: int = 11
     morning_sync_minute: int = 0
+    # The afternoon-props LaunchAgent re-scores matchups once most lineups
+    # have posted (night games publish theirs mid-afternoon) and alerts any
+    # NEW Premium/Strong hitter props the 11 AM run couldn't see.
+    afternoon_props_hour: int = 16
+    afternoon_props_minute: int = 30
 
     # --- Modeling ---
     # Backtest needs lots of draws to get tight per-game tail estimates

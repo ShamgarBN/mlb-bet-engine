@@ -123,3 +123,45 @@ def test_build_message_renders_pitcher_k_section():
     pk = [{"pitcher": "Logan Gilbert", "team": "SEA", "throws": "R", "vs_team": "CLE", "est_k": 6.6}]
     msg = alerts.build_message(date(2026, 6, 25), [], [], pk)
     assert "Pitcher strikeouts" in msg and "estimated K's: 6.6" in msg
+
+
+# --- afternoon lineup-props alert ------------------------------------------ #
+def _wire_afternoon(monkeypatch, *, prop=_PROP, seen=None):
+    monkeypatch.setattr(alerts, "todays_matchups", lambda t, **k: [{"game_pk": 1}])
+    monkeypatch.setattr(alerts, "select_prop_picks", lambda m: prop)
+    monkeypatch.setattr(alerts, "_journaled_prop_keys", lambda t: seen or set())
+
+
+def test_afternoon_message_none_when_empty():
+    assert alerts.build_afternoon_message(date(2026, 7, 18), []) is None
+
+
+def test_afternoon_message_lists_props():
+    msg = alerts.build_afternoon_message(date(2026, 7, 18), _PROP)
+    assert "afternoon lineup props" in msg
+    assert "Aaron Judge" in msg and "PREMIUM" in msg
+
+
+def test_afternoon_sends_only_new_props(monkeypatch, tmp_path):
+    # Judge's HR prop was already journaled by the morning run -> excluded.
+    _wire_afternoon(monkeypatch, seen={("Aaron Judge", "prop_hr")})
+    monkeypatch.setattr(alerts.settings, "cache_dir", tmp_path)
+    res = alerts.send_afternoon_props(date(2026, 7, 18), dry_run=True)
+    assert res["n_prop"] == 1 and res["n_prop_new"] == 0
+    assert res["sent"] is False and res["reason"] == "no-new-props"
+
+
+def test_afternoon_sends_unseen_props(monkeypatch, tmp_path):
+    _wire_afternoon(monkeypatch, seen={("Someone Else", "prop_hr")})
+    monkeypatch.setattr(alerts.settings, "cache_dir", tmp_path)
+    monkeypatch.setattr(alerts, "post_to_discord", lambda content, **k: True)
+    res = alerts.send_afternoon_props(date(2026, 7, 18))
+    assert res["n_prop_new"] == 1 and res["sent"] is True
+    second = alerts.send_afternoon_props(date(2026, 7, 18))
+    assert second["sent"] is False and second["reason"] == "already-sent-today"
+
+
+def test_afternoon_marker_separate_from_morning(tmp_path, monkeypatch):
+    monkeypatch.setattr(alerts.settings, "cache_dir", tmp_path)
+    d = date(2026, 7, 18)
+    assert alerts._marker_path(d) != alerts._marker_path(d, kind="afternoon")

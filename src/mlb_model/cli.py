@@ -601,6 +601,31 @@ def morning_sync_cmd(
     console.print(counts)
 
 
+@app.command("afternoon-props")
+def afternoon_props_cmd(
+    force: Annotated[bool, typer.Option(help="Send even if already sent today")] = False,
+    dry_run: Annotated[bool, typer.Option(help="Build the message but don't post it")] = False,
+) -> None:
+    """Second daily alert (~4:30 PM): hitter props from late-posted lineups.
+
+    Night games publish lineups mid-afternoon -- hours after the 11 AM
+    alert. This pass re-scores the slate and posts only the NEW
+    Premium/Strong hitter props the morning run couldn't see. Silent when
+    nothing new qualifies.
+    """
+    configure_logging()
+    from mlb_model.automation import alerts
+
+    result = alerts.send_afternoon_props(force=force, dry_run=dry_run)
+    if result.get("message"):
+        console.print(result["message"])
+    console.print(
+        f"props scored: {result.get('n_prop', 0)} · new: {result.get('n_prop_new', 0)} "
+        f"· sent: {result.get('sent', False)}"
+        + (f" · {result['reason']}" if result.get("reason") else "")
+    )
+
+
 @app.command("weekly-train")
 def weekly_train_cmd(
     force: Annotated[bool, typer.Option(help="Run even if not yet Sunday or already trained")] = False,

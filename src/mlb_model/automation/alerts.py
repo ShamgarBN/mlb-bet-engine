@@ -75,12 +75,18 @@ def select_game_picks(target: date_cls) -> list[dict[str, Any]]:
     ]
 
 
-def todays_matchups(target: date_cls, *, record: bool = True) -> list[dict[str, Any]]:
-    """Scored hitter-prop matchups for ``target`` (records them for grading)."""
+def todays_matchups(
+    target: date_cls, *, record: bool = True, refresh: bool = False,
+) -> list[dict[str, Any]]:
+    """Scored hitter-prop matchups for ``target`` (records them for grading).
+
+    ``refresh`` busts the per-date cache so lineups posted since the last
+    run are picked up (the afternoon pass needs this).
+    """
     from mlb_model.scoring.service import get_matchups_for_date
 
     try:
-        matchups = get_matchups_for_date(target, refresh=False)
+        matchups = get_matchups_for_date(target, refresh=refresh)
     except Exception:  # noqa: BLE001
         log.warning("alerts.prop.matchups_failed")
         return []
@@ -257,8 +263,107 @@ def post_to_discord(content: str, *, webhook_url: str | None = None) -> bool:
     return ok
 
 
-def _marker_path(target: date_cls):
-    return settings.cache_dir / f"alert_sent_{target.isoformat()}.flag"
+def _marker_path(target: date_cls, kind: str = "daily"):
+    if kind == "daily":
+        return settings.cache_dir / f"alert_sent_{target.isoformat()}.flag"
+    return settings.cache_dir / f"alert_{kind}_sent_{target.isoformat()}.flag"
+
+
+def _journaled_prop_keys(target: date_cls) -> set[tuple[str, str]]:
+    """(batter_name, prop_market) pairs already journaled for ``target``.
+
+    The morning run journals every matchup it scored, so this is exactly
+    the set of props the 11 AM alert could have seen. The afternoon pass
+    alerts only props NOT in this set — i.e. from lineups posted later.
+    """
+    try:
+        from mlb_model.journal.props import _load
+
+        df = _load()
+        if df.empty:
+            return set()
+        day = df[df["game_date"].astype(str).str[:10] == target.isoformat()]
+        day = day[day["market"].isin(_PROP_MARKETS)]
+        return set(zip(day["batter_name"].astype(str), day["market"].astype(str)))
+    except Exception:  # noqa: BLE001 -- dedup is best-effort; worst case we repeat picks
+        log.warning("alerts.afternoon.journal_read_failed")
+        return set()
+
+
+def build_afternoon_message(
+    target: date_cls, prop_picks: list[dict], *, uncapped: bool = False,
+) -> str | None:
+    """Markdown for the afternoon lineup-props alert, or None when empty."""
+    if not prop_picks:
+        return None
+    big = 10**9
+    max_prop = big if uncapped else settings.alert_max_prop_picks
+    when = target.strftime("%a %b %-d")
+    lines = [f"**⚾ MLB Forecast — afternoon lineup props · {when}**"]
+    lines.append("_New picks from lineups posted after the morning alert._")
+    shown = prop_picks[:max_prop]
+    lines.append(f"\n__Hitter props__ ({len(prop_picks)})")
+    for p in shown:
+        vs = f" vs {p['opp_throws']}HP {p['opp_sp']}" if p.get("opp_sp") else ""
+        lines.append(
+            f"{_tier_tag(p['tier'])} · {p['player']} ({p['team']}) {p['market']} "
+            f"— {p['model_prob'] * 100:.0f}% (+{p['edge_pp']:.0f}pp){vs}"
+        )
+    if len(prop_picks) > len(shown):
+        lines.append(f"_…and {len(prop_picks) - len(shown)} more (see the app)_")
+    lines.append("\n_Research only — not financial advice._")
+    return "\n".join(lines)
+
+
+def send_afternoon_props(
+    target: date_cls | None = None, *, force: bool = False, dry_run: bool = False,
+    uncapped: bool = False,
+) -> dict[str, Any]:
+    """Second daily pass: alert Premium/Strong hitter props the morning run
+    couldn't see because lineups weren't posted yet.
+
+    Re-scores the slate with fresh lineups, then sends only props whose
+    (batter, market) wasn't already journaled by the morning run. Silent
+    when nothing new qualifies. Deduped once per day via its own marker.
+    """
+    target = target or date_cls.today()
+    marker = _marker_path(target, kind="afternoon")
+    if not dry_run and not force and marker.exists():
+        return {"sent": False, "reason": "already-sent-today"}
+
+    # Snapshot BEFORE the refresh records new rows -- this is what the
+    # morning run saw.
+    seen = _journaled_prop_keys(target)
+    matchups = todays_matchups(target, record=True, refresh=True)
+    props = select_prop_picks(matchups)
+    label_to_market = {v: k for k, v in _PROP_LABEL.items()}
+    new = [
+        p for p in props
+        if (p["player"], label_to_market.get(p["market"], "")) not in seen
+    ]
+    result: dict[str, Any] = {"n_prop": len(props), "n_prop_new": len(new)}
+
+    message = build_afternoon_message(target, new, uncapped=uncapped)
+    result["message"] = message
+    if message is None:
+        result.update(sent=False, reason="no-new-props")
+        return result
+    if dry_run:
+        result.update(sent=False, reason="dry-run")
+        return result
+
+    sent = post_to_discord(message)
+    result["sent"] = sent
+    if sent:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("sent")
+        log.info(
+            "alerts.afternoon.sent",
+            date=target.isoformat(), n_prop=len(props), n_prop_new=len(new),
+        )
+    else:
+        result["reason"] = "post-failed-or-no-webhook"
+    return result
 
 
 def send_daily_alert(
