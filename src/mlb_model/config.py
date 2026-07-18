@@ -83,6 +83,10 @@ class Settings(BaseSettings):
     # NEW Premium/Strong hitter props the 11 AM run couldn't see.
     afternoon_props_hour: int = 16
     afternoon_props_minute: int = 30
+    # The daily-recap LaunchAgent posts yesterday's scorecard (win rates by
+    # tier for alerted picks) each morning before the 11 AM picks alert.
+    daily_recap_hour: int = 8
+    daily_recap_minute: int = 0
 
     # --- Modeling ---
     # Backtest needs lots of draws to get tight per-game tail estimates

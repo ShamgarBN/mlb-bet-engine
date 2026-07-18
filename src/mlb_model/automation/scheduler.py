@@ -33,6 +33,7 @@ LAUNCH_AGENTS_DIR: Final[Path] = Path.home() / "Library" / "LaunchAgents"
 MORNING_LABEL: Final[str] = "com.local.mlbforecast.morning-sync"
 WEEKLY_LABEL: Final[str] = "com.local.mlbforecast.weekly-train"
 AFTERNOON_LABEL: Final[str] = "com.local.mlbforecast.afternoon-props"
+RECAP_LABEL: Final[str] = "com.local.mlbforecast.daily-recap"
 
 
 def _resolve_uv() -> str:
@@ -128,12 +129,21 @@ def install() -> dict[str, Path]:
             "Minute": int(settings.afternoon_props_minute),
         },
     )
+    recap_plist = _build_plist(
+        RECAP_LABEL,
+        args=[uv, "run", "mlb-model", "daily-recap"],
+        calendar_interval={
+            "Hour": int(settings.daily_recap_hour),
+            "Minute": int(settings.daily_recap_minute),
+        },
+    )
 
     paths: dict[str, Path] = {}
     for label, payload in [
         (MORNING_LABEL, morning_plist),
         (WEEKLY_LABEL, weekly_plist),
         (AFTERNOON_LABEL, afternoon_plist),
+        (RECAP_LABEL, recap_plist),
     ]:
         path = _write_plist(label, payload)
         # Unload any prior version then load the fresh one.
@@ -146,7 +156,7 @@ def install() -> dict[str, Path]:
 
 def uninstall() -> None:
     """Unload and delete all LaunchAgents."""
-    for label in (MORNING_LABEL, WEEKLY_LABEL, AFTERNOON_LABEL):
+    for label in (MORNING_LABEL, WEEKLY_LABEL, AFTERNOON_LABEL, RECAP_LABEL):
         path = LAUNCH_AGENTS_DIR / f"{label}.plist"
         if path.exists():
             _launchctl("unload", str(path))

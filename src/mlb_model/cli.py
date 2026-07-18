@@ -626,6 +626,29 @@ def afternoon_props_cmd(
     )
 
 
+@app.command("daily-recap")
+def daily_recap_cmd(
+    force: Annotated[bool, typer.Option(help="Send even if already sent today")] = False,
+    dry_run: Annotated[bool, typer.Option(help="Build the message but don't post it")] = False,
+) -> None:
+    """Morning scorecard (~8 AM): yesterday's alerted picks graded by tier.
+
+    Pulls yesterday's finals, settles the props journal, and posts win
+    rates for Premium/Strong hitter props, game picks, and pitcher K
+    spots to Discord.
+    """
+    configure_logging()
+    from mlb_model.automation import daily_recap
+
+    result = daily_recap.run_daily_recap(force=force, dry_run=dry_run)
+    if result.get("message"):
+        console.print(result["message"])
+    console.print(
+        f"sent: {result.get('sent', False)}"
+        + (f" · {result['reason']}" if result.get("reason") else "")
+    )
+
+
 @app.command("weekly-train")
 def weekly_train_cmd(
     force: Annotated[bool, typer.Option(help="Run even if not yet Sunday or already trained")] = False,

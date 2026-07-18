@@ -150,6 +150,7 @@ def select_pitcher_strikeouts(matchups: list[dict]) -> list[dict[str, Any]]:
                 continue
             out.append({
                 "pitcher": name,
+                "pitcher_id": sp.get("id"),
                 "throws": sp.get("throws") or "",
                 "team": side.get("team_abbr") or "",
                 "vs_team": opp.get("team_abbr") or "",
@@ -261,6 +262,42 @@ def post_to_discord(content: str, *, webhook_url: str | None = None) -> bool:
             log.warning("alerts.discord.post_failed")
             ok = False
     return ok
+
+
+def _pitcher_k_log_path():
+    return settings.data_dir / "journal" / "pitcher_k_alerts.parquet"
+
+
+def _log_pitcher_ks(target: date_cls, pitcher_ks: list[dict]) -> None:
+    """Persist the alerted pitcher-K spots so the recap can grade them.
+
+    Best-effort append, deduped by (date, pitcher_id). Without this the
+    K section exists only in the Discord message and can't be scored.
+    """
+    if not pitcher_ks:
+        return
+    try:
+        import pandas as pd
+
+        rows = pd.DataFrame([
+            {
+                "game_date": target.isoformat(),
+                "pitcher_id": k.get("pitcher_id"),
+                "pitcher": k.get("pitcher"),
+                "team": k.get("team"),
+                "vs_team": k.get("vs_team"),
+                "est_k": k.get("est_k"),
+            }
+            for k in pitcher_ks
+        ])
+        path = _pitcher_k_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            rows = pd.concat([pd.read_parquet(path), rows], ignore_index=True)
+        rows = rows.drop_duplicates(subset=["game_date", "pitcher_id"], keep="first")
+        rows.to_parquet(path, index=False)
+    except Exception:  # noqa: BLE001 -- logging picks must never block the alert
+        log.warning("alerts.pitcher_k_log.failed")
 
 
 def _marker_path(target: date_cls, kind: str = "daily"):
@@ -433,6 +470,7 @@ def send_daily_alert(
         marker = _marker_path(target)
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("sent")
+        _log_pitcher_ks(target, pitcher_ks)
         log.info("alerts.sent", date=target.isoformat(), n_game=len(game_picks), n_prop=len(prop_picks))
     else:
         result["reason"] = "post-failed-or-no-webhook"

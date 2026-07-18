@@ -196,6 +196,7 @@ def test_scheduler_plist_payload(tmp_path, monkeypatch) -> None:
     paths = scheduler.install()
     assert set(paths) == {
         scheduler.MORNING_LABEL, scheduler.WEEKLY_LABEL, scheduler.AFTERNOON_LABEL,
+        scheduler.RECAP_LABEL,
     }
 
     for label, path in paths.items():
