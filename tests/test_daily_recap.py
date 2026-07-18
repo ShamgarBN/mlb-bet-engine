@@ -22,22 +22,20 @@ def test_message_none_when_nothing_settled():
 def test_message_shows_tier_records_and_pcts():
     msg = daily_recap.build_recap_message(date(2026, 7, 17), _PROPS, _GAMES, [])
     assert "yesterday's scorecard" in msg
-    assert "🟢 Premium: 4-2 (67%)" in msg
-    assert "🟡 Strong: 6-6 (50%)" in msg
-    assert "🟡 Strong: 1-0 (100%)" in msg
+    assert "🟢 Premium props: 4-2 (67%)" in msg
+    assert "🟡 Strong props: 6-6 (50%)" in msg
+    assert "🟡 Strong game picks: 1-0 (100%)" in msg
 
 
-def test_message_pitcher_section_counts_only_graded():
+def test_message_pitcher_line_counts_only_graded():
     msg = daily_recap.build_recap_message(date(2026, 7, 17), {}, {}, _PITCHERS)
-    assert "Pitcher K spots__ (1/2 reached estimate)" in msg
-    assert "Dylan Cease (SD): est 8.8 → 9 ✓" in msg
-    assert "Logan Gilbert (SEA): est 7.1 → 4" in msg
-    assert "Rained Out (COL): est 6 → —" in msg
+    assert "⚾ Pitcher K spots: 1-1 (50%)" in msg
+    assert "Cease" not in msg  # summary only, no per-pick lines
 
 
-def test_message_empty_sections_labeled():
+def test_message_omits_empty_categories():
     msg = daily_recap.build_recap_message(date(2026, 7, 17), _PROPS, {}, [])
-    assert "_none alerted_" in msg
+    assert "game picks" not in msg and "Pitcher" not in msg
 
 
 def test_pct_zero_denominator():

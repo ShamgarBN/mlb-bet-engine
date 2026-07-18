@@ -124,40 +124,31 @@ def build_recap_message(
     games: dict[str, dict[str, int]],
     pitchers: list[dict[str, Any]],
 ) -> str | None:
-    """Compact markdown scorecard, or None when nothing settled."""
-    if not props and not games and not pitchers:
+    """One line per category with W-L and win %; None when nothing settled.
+
+    Deliberately terse (user preference): no per-pick detail, and empty
+    categories are omitted rather than labeled.
+    """
+    lines: list[str] = []
+    for tier in ("premium", "strong"):
+        if tier in props:
+            w, l = props[tier]["wins"], props[tier]["losses"]
+            lines.append(f"{_TIER_TAG[tier]} props: {w}-{l} ({_pct(w, l)})")
+    for tier in ("premium", "strong"):
+        if tier in games:
+            w, l = games[tier]["wins"], games[tier]["losses"]
+            lines.append(f"{_TIER_TAG[tier]} game picks: {w}-{l} ({_pct(w, l)})")
+    graded = [p for p in pitchers if p["actual_k"] is not None]
+    if graded:
+        hits = sum(1 for p in graded if p["hit"])
+        lines.append(
+            f"⚾ Pitcher K spots: {hits}-{len(graded) - hits} "
+            f"({_pct(hits, len(graded) - hits)})"
+        )
+    if not lines:
         return None
     when = target.strftime("%a %b %-d")
-    lines = [f"**📊 MLB Forecast — yesterday's scorecard · {when}**"]
-
-    lines.append("\n__Hitter props__")
-    if props:
-        for tier in ("premium", "strong"):
-            if tier in props:
-                w, l = props[tier]["wins"], props[tier]["losses"]
-                lines.append(f"{_TIER_TAG[tier]}: {w}-{l} ({_pct(w, l)})")
-    else:
-        lines.append("_none settled_")
-
-    lines.append("\n__Game picks__")
-    if games:
-        for tier in ("premium", "strong"):
-            if tier in games:
-                w, l = games[tier]["wins"], games[tier]["losses"]
-                lines.append(f"{_TIER_TAG[tier]}: {w}-{l} ({_pct(w, l)})")
-    else:
-        lines.append("_none alerted_")
-
-    if pitchers:
-        graded = [p for p in pitchers if p["actual_k"] is not None]
-        hits = sum(1 for p in graded if p["hit"])
-        lines.append(f"\n__Pitcher K spots__ ({hits}/{len(graded)} reached estimate)")
-        for p in pitchers:
-            actual = "—" if p["actual_k"] is None else str(p["actual_k"])
-            mark = " ✓" if p["hit"] else ""
-            lines.append(f"• {p['pitcher']} ({p['team']}): est {p['est_k']:g} → {actual}{mark}")
-
-    return "\n".join(lines)
+    return "\n".join([f"**📊 MLB Forecast — yesterday's scorecard · {when}**", *lines])
 
 
 def run_daily_recap(
