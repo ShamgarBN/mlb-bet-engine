@@ -331,10 +331,13 @@ def send_afternoon_props(
     if not dry_run and not force and marker.exists():
         return {"sent": False, "reason": "already-sent-today"}
 
-    # Snapshot BEFORE the refresh records new rows -- this is what the
-    # morning run saw.
+    # Snapshot what the MORNING run journaled, then score with fresh
+    # lineups WITHOUT recording -- recording here would make this run's
+    # own rows look "seen" to any later run (a dry run five minutes
+    # before the real send silently blanked it). Rows are journaled
+    # below, only once the outcome is settled.
     seen = _journaled_prop_keys(target)
-    matchups = todays_matchups(target, record=True, refresh=True)
+    matchups = todays_matchups(target, record=False, refresh=True)
     props = select_prop_picks(matchups)
     label_to_market = {v: k for k, v in _PROP_LABEL.items()}
     new = [
@@ -345,8 +348,19 @@ def send_afternoon_props(
 
     message = build_afternoon_message(target, new, uncapped=uncapped)
     result["message"] = message
+
+    def _journal() -> None:
+        try:
+            from mlb_model.journal.props import record_matchups
+
+            record_matchups(matchups)
+        except Exception:  # noqa: BLE001 -- journaling must never block the alert
+            log.warning("alerts.prop.record_failed")
+
     if message is None:
         result.update(sent=False, reason="no-new-props")
+        if not dry_run:
+            _journal()  # still journal candidates for grading
         return result
     if dry_run:
         result.update(sent=False, reason="dry-run")
@@ -355,6 +369,7 @@ def send_afternoon_props(
     sent = post_to_discord(message)
     result["sent"] = sent
     if sent:
+        _journal()
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("sent")
         log.info(
@@ -362,6 +377,8 @@ def send_afternoon_props(
             date=target.isoformat(), n_prop=len(props), n_prop_new=len(new),
         )
     else:
+        # Deliberately NOT journaled: a retry (--force) must still see
+        # these props as "new" or it would dedupe its own failed attempt.
         result["reason"] = "post-failed-or-no-webhook"
     return result
 

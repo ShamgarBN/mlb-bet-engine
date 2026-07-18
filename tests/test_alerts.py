@@ -165,3 +165,40 @@ def test_afternoon_marker_separate_from_morning(tmp_path, monkeypatch):
     monkeypatch.setattr(alerts.settings, "cache_dir", tmp_path)
     d = date(2026, 7, 18)
     assert alerts._marker_path(d) != alerts._marker_path(d, kind="afternoon")
+
+
+def test_afternoon_dry_run_does_not_journal(monkeypatch, tmp_path):
+    calls = []
+    _wire_afternoon(monkeypatch)
+    monkeypatch.setattr(alerts.settings, "cache_dir", tmp_path)
+    monkeypatch.setattr(
+        "mlb_model.journal.props.record_matchups", lambda m: calls.append(m)
+    )
+    res = alerts.send_afternoon_props(date(2026, 7, 18), dry_run=True)
+    assert res["n_prop_new"] == 1 and calls == []
+    live = alerts.send_afternoon_props(date(2026, 7, 18), dry_run=True)
+    assert live["n_prop_new"] == 1  # dry run didn't poison the dedup
+
+
+def test_afternoon_failed_post_does_not_journal(monkeypatch, tmp_path):
+    calls = []
+    _wire_afternoon(monkeypatch)
+    monkeypatch.setattr(alerts.settings, "cache_dir", tmp_path)
+    monkeypatch.setattr(
+        "mlb_model.journal.props.record_matchups", lambda m: calls.append(m)
+    )
+    monkeypatch.setattr(alerts, "post_to_discord", lambda content, **k: False)
+    res = alerts.send_afternoon_props(date(2026, 7, 18))
+    assert res["sent"] is False and calls == []
+
+
+def test_afternoon_successful_post_journals(monkeypatch, tmp_path):
+    calls = []
+    _wire_afternoon(monkeypatch)
+    monkeypatch.setattr(alerts.settings, "cache_dir", tmp_path)
+    monkeypatch.setattr(
+        "mlb_model.journal.props.record_matchups", lambda m: calls.append(m)
+    )
+    monkeypatch.setattr(alerts, "post_to_discord", lambda content, **k: True)
+    res = alerts.send_afternoon_props(date(2026, 7, 18))
+    assert res["sent"] is True and len(calls) == 1
