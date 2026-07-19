@@ -1526,7 +1526,7 @@ wheels = [
 
 [[package]]
 name = "mlb-model"
-version = "1.14.1"
+version = "1.15.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },

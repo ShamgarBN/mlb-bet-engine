@@ -194,24 +194,30 @@ def _prop_lines(prop_picks: list[dict], *, max_prop: int) -> list[str]:
             -max(x["edge_pp"] for x in ps),
         ),
     )
+    # Cap picks per group too, or one hot matchup (a bad pitcher at Coors)
+    # eats the whole budget and only 2-3 games make the message. An
+    # uncapped render (`alert run --full`) shows every pick.
+    group_cap = min(6, max_prop) if max_prop < 10**8 else max_prop
     lines: list[str] = []
     budget = max_prop
     shown = 0
     for ps in ordered:
         if budget <= 0:
             break
-        ps = sorted(ps, key=lambda x: (x["tier"] != "premium", -x["edge_pp"]))[:budget]
-        budget -= len(ps)
-        shown += len(ps)
-        head = ps[0]
+        ranked = sorted(ps, key=lambda x: (x["tier"] != "premium", -x["edge_pp"]))
+        take = ranked[: min(group_cap, budget)]
+        budget -= len(take)
+        shown += len(take)
+        head = take[0]
         sp = _surname(head.get("opp_sp") or "")
         vs = f" vs {sp} ({head.get('opp_throws') or '?'})" if sp else ""
         picks = " · ".join(
             f"{_TIER_EMOJI.get(x['tier'], '•')} {_surname(x['player'])} "
             f"{_MARKET_SHORT.get(x['market'], x['market'])} {x['model_prob'] * 100:.0f}%"
-            for x in ps
+            for x in take
         )
-        lines.append(f"{head['team']}{vs}: {picks}")
+        extra = f" (+{len(ps) - len(take)})" if len(ps) > len(take) else ""
+        lines.append(f"{head['team']}{vs}: {picks}{extra}")
     rest = len(prop_picks) - shown
     if rest > 0:
         lines.append(f"_…and {rest} more (see the app)_")
