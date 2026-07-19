@@ -207,3 +207,30 @@ def test_alerted_props_log_round_trip(monkeypatch, tmp_path):
     alerts._log_alerted_props(d, _PROP)  # idempotent
     import pandas as pd
     assert len(pd.read_parquet(alerts._alerted_props_log_path())) == 1
+
+
+def test_not_started_filter():
+    from datetime import UTC, datetime
+
+    now = datetime(2026, 7, 19, 20, 30, tzinfo=UTC)
+    assert alerts._not_started("2026-07-19 23:10:00", now=now) is True
+    assert alerts._not_started("2026-07-19 17:10:00", now=now) is False
+    assert alerts._not_started(None, now=now) is True
+    assert alerts._not_started("garbage", now=now) is True
+
+
+def test_afternoon_skips_started_games(monkeypatch, tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    started = {"scheduled_start": (now - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")}
+    upcoming = {"scheduled_start": (now + timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")}
+    monkeypatch.setattr(alerts, "todays_matchups", lambda t, **k: [started, upcoming])
+    captured = []
+    monkeypatch.setattr(
+        alerts, "select_prop_picks", lambda m: captured.append(m) or []
+    )
+    monkeypatch.setattr(alerts, "_alerted_prop_keys", lambda t: set())
+    monkeypatch.setattr(alerts.settings, "cache_dir", tmp_path)
+    alerts.send_afternoon_props(date(2026, 7, 19), dry_run=True)
+    assert captured[0] == [upcoming]

@@ -71,7 +71,12 @@ def calibrated_probs(scores: dict[str, float | None]) -> dict[str, float | None]
             out[market] = None
             continue
         try:
-            out[market] = float(cal.predict([float(score)])[0])
+            p = float(cal.predict([float(score)])[0])
+            # Anti-saturation clamp (same disease v1.9.2 fixed for game
+            # markets): isotonic tails snap extreme raw scores to a hard
+            # 1.0, which surfaced as "H 100%" props. No batter outcome is
+            # ever a certainty.
+            out[market] = min(max(p, 0.02), 0.95)
         except Exception:  # noqa: BLE001
             out[market] = None
     return out

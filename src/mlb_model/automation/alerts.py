@@ -357,6 +357,25 @@ def _marker_path(target: date_cls, kind: str = "daily"):
     return settings.cache_dir / f"alert_{kind}_sent_{target.isoformat()}.flag"
 
 
+def _not_started(scheduled_start, *, now=None) -> bool:
+    """True when the game's UTC start time is still in the future.
+
+    Unknown/unparseable starts return True (better to repeat a pick than
+    silently drop a live game).
+    """
+    from datetime import UTC, datetime
+
+    import pandas as pd
+
+    ts = pd.to_datetime(scheduled_start, errors="coerce")
+    if ts is pd.NaT:
+        return True
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    now = now or datetime.now(UTC)
+    return ts > now
+
+
 def _alerted_props_log_path():
     return settings.data_dir / "journal" / "alerted_props.parquet"
 
@@ -448,6 +467,10 @@ def send_afternoon_props(
     # service's own recording during the refresh below.
     seen = _alerted_prop_keys(target)
     matchups = todays_matchups(target, record=False, refresh=True)
+    # Only games that haven't started: by 4:30 the day slate is underway
+    # or final, and a prop for a game in progress isn't bettable. This
+    # also keeps the morning alert's day-game picks from repeating.
+    matchups = [m for m in matchups if _not_started(m.get("scheduled_start"))]
     props = select_prop_picks(matchups)
     new = [p for p in props if (p["player"], p["market"]) not in seen]
     result: dict[str, Any] = {"n_prop": len(props), "n_prop_new": len(new)}
