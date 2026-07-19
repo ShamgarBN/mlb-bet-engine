@@ -26,10 +26,10 @@ def test_build_message_none_when_empty():
 def test_build_message_includes_both_sections():
     msg = alerts.build_message(date(2026, 6, 25), _GAME, _PROP)
     assert "Game markets" in msg and "Hitter props" in msg
-    assert "PREMIUM" in msg and "STRONG" in msg
-    assert "NYY @ BOS" in msg and "Aaron Judge" in msg
-    assert "74%" in msg                       # game confidence rendered
-    assert "+13pp" in msg                     # prop edge rounded
+    assert "🟢" in msg and "🟡" in msg
+    assert "NYY @ BOS" in msg
+    assert "NYY vs Crochet (L): 🟢 Judge HR 24%" in msg   # grouped prop line
+    assert "74%" in msg                                    # game confidence rendered
 
 
 def test_build_message_caps_long_lists(monkeypatch):
@@ -38,15 +38,15 @@ def test_build_message_caps_long_lists(monkeypatch):
     msg = alerts.build_message(date(2026, 6, 25), [], props)
     # 2 shown + an "…and 8 more" summary line.
     assert "and 8 more" in msg
-    assert msg.count("PREMIUM") == 2
+    assert msg.count("🟢") == 2
 
 
 def test_build_message_uncapped_shows_everything(monkeypatch):
     monkeypatch.setattr(alerts.settings, "alert_max_prop_picks", 2)
     props = [dict(_PROP[0], player=f"P{i}") for i in range(10)]
     msg = alerts.build_message(date(2026, 6, 25), [], props, uncapped=True)
-    assert "more" not in msg           # no "…and N more" truncation
-    assert msg.count("PREMIUM") == 10  # all 10 listed
+    assert "more" not in msg        # no "…and N more" truncation
+    assert msg.count("🟢") == 10    # all 10 listed
 
 
 def test_chunk_respects_limit():
@@ -122,7 +122,7 @@ def test_prop_picks_exclude_strikeouts():
 def test_build_message_renders_pitcher_k_section():
     pk = [{"pitcher": "Logan Gilbert", "team": "SEA", "throws": "R", "vs_team": "CLE", "est_k": 6.6}]
     msg = alerts.build_message(date(2026, 6, 25), [], [], pk)
-    assert "Pitcher strikeouts" in msg and "estimated K's: 6.6" in msg
+    assert "Pitcher Ks (est)" in msg and "Gilbert (SEA) 6.6" in msg
 
 
 # --- afternoon lineup-props alert ------------------------------------------ #
@@ -139,7 +139,7 @@ def test_afternoon_message_none_when_empty():
 def test_afternoon_message_lists_props():
     msg = alerts.build_afternoon_message(date(2026, 7, 18), _PROP)
     assert "afternoon lineup props" in msg
-    assert "Aaron Judge" in msg and "PREMIUM" in msg
+    assert "🟢 Judge HR 24%" in msg
 
 
 def test_afternoon_sends_only_new_props(monkeypatch, tmp_path):

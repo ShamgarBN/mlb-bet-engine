@@ -163,8 +163,59 @@ def select_pitcher_strikeouts(matchups: list[dict]) -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 # Message formatting
 # --------------------------------------------------------------------------- #
-def _tier_tag(tier: str) -> str:
-    return "🟢 PREMIUM" if tier == "premium" else "🟡 STRONG"
+_TIER_EMOJI = {"premium": "🟢", "strong": "🟡"}
+# Compact market tags for the grouped prop lines ("1+ Hit" reads fine on
+# its own line but wastes width inline).
+_MARKET_SHORT = {"1+ Hit": "H", "HR": "HR", "2+ TB": "TB"}
+
+
+def _surname(name: str) -> str:
+    """'Michael Harris II' -> 'Harris II'; single tokens pass through."""
+    parts = (name or "").split()
+    return " ".join(parts[1:]) if len(parts) > 1 else (name or "")
+
+
+def _prop_lines(prop_picks: list[dict], *, max_prop: int) -> list[str]:
+    """Dense prop section: one line per team-vs-pitcher group.
+
+    ``CWS vs Bieber (R): 🟢 Vargas TB 51% · 🟡 Antonacci H 71%``
+
+    Groups are ordered premium-first then by best edge; the pick budget
+    (``max_prop``) fills group by group with a trailing "+N more" line.
+    """
+    groups: dict[tuple, list[dict]] = {}
+    for p in prop_picks:
+        key = (p.get("team") or "", p.get("opp_sp") or "", p.get("opp_throws") or "")
+        groups.setdefault(key, []).append(p)
+    ordered = sorted(
+        groups.values(),
+        key=lambda ps: (
+            all(x["tier"] != "premium" for x in ps),
+            -max(x["edge_pp"] for x in ps),
+        ),
+    )
+    lines: list[str] = []
+    budget = max_prop
+    shown = 0
+    for ps in ordered:
+        if budget <= 0:
+            break
+        ps = sorted(ps, key=lambda x: (x["tier"] != "premium", -x["edge_pp"]))[:budget]
+        budget -= len(ps)
+        shown += len(ps)
+        head = ps[0]
+        sp = _surname(head.get("opp_sp") or "")
+        vs = f" vs {sp} ({head.get('opp_throws') or '?'})" if sp else ""
+        picks = " · ".join(
+            f"{_TIER_EMOJI.get(x['tier'], '•')} {_surname(x['player'])} "
+            f"{_MARKET_SHORT.get(x['market'], x['market'])} {x['model_prob'] * 100:.0f}%"
+            for x in ps
+        )
+        lines.append(f"{head['team']}{vs}: {picks}")
+    rest = len(prop_picks) - shown
+    if rest > 0:
+        lines.append(f"_…and {rest} more (see the app)_")
+    return lines
 
 
 def build_message(
@@ -194,31 +245,25 @@ def build_message(
         shown = game_picks[:max_game]
         lines.append(f"\n__Game markets__ ({len(game_picks)})")
         for p in shown:
-            conf = f"{p['confidence'] * 100:.0f}%" if p.get("confidence") is not None else "—"
-            edge = f" · {p['edge_pp']:+.0f}pp vs market" if p.get("edge_pp") is not None else ""
-            lines.append(f"{_tier_tag(p['tier'])} · {p['matchup']} — {p['market']}: {p['pick']} ({conf}{edge})")
+            conf = f" {p['confidence'] * 100:.0f}%" if p.get("confidence") is not None else ""
+            edge = f" ({p['edge_pp']:+.0f}pp)" if p.get("edge_pp") is not None else ""
+            lines.append(
+                f"{_TIER_EMOJI.get(p['tier'], '•')} {p['matchup']} "
+                f"{p['market']}: {p['pick']}{conf}{edge}"
+            )
         if len(game_picks) > len(shown):
             lines.append(f"_…and {len(game_picks) - len(shown)} more (see the app)_")
 
     if prop_picks:
-        shown = prop_picks[:max_prop]
         lines.append(f"\n__Hitter props__ ({len(prop_picks)})")
-        for p in shown:
-            vs = f" vs {p['opp_throws']}HP {p['opp_sp']}" if p.get("opp_sp") else ""
-            lines.append(
-                f"{_tier_tag(p['tier'])} · {p['player']} ({p['team']}) {p['market']} "
-                f"— {p['model_prob'] * 100:.0f}% (+{p['edge_pp']:.0f}pp){vs}"
-            )
-        if len(prop_picks) > len(shown):
-            lines.append(f"_…and {len(prop_picks) - len(shown)} more (see the app)_")
+        lines.extend(_prop_lines(prop_picks, max_prop=max_prop))
 
     if pitcher_ks:
-        lines.append("\n__Pitcher strikeouts (high-K spots)__")
-        for k in pitcher_ks[: (big if uncapped else 12)]:
-            lines.append(
-                f"• {k['pitcher']} ({k['team']}, {k['throws']}HP) vs {k['vs_team']} "
-                f"— estimated K's: {k['est_k']}"
-            )
+        ks = pitcher_ks[: (big if uncapped else 12)]
+        inline = " · ".join(
+            f"{_surname(k['pitcher'])} ({k['team']}) {k['est_k']:g}" for k in ks
+        )
+        lines.append(f"\n__Pitcher Ks (est)__\n{inline}")
 
     lines.append("\n_Research only — not financial advice._")
     return "\n".join(lines)
@@ -337,17 +382,8 @@ def build_afternoon_message(
     max_prop = big if uncapped else settings.alert_max_prop_picks
     when = target.strftime("%a %b %-d")
     lines = [f"**⚾ MLB Forecast — afternoon lineup props · {when}**"]
-    lines.append("_New picks from lineups posted after the morning alert._")
-    shown = prop_picks[:max_prop]
     lines.append(f"\n__Hitter props__ ({len(prop_picks)})")
-    for p in shown:
-        vs = f" vs {p['opp_throws']}HP {p['opp_sp']}" if p.get("opp_sp") else ""
-        lines.append(
-            f"{_tier_tag(p['tier'])} · {p['player']} ({p['team']}) {p['market']} "
-            f"— {p['model_prob'] * 100:.0f}% (+{p['edge_pp']:.0f}pp){vs}"
-        )
-    if len(prop_picks) > len(shown):
-        lines.append(f"_…and {len(prop_picks) - len(shown)} more (see the app)_")
+    lines.extend(_prop_lines(prop_picks, max_prop=max_prop))
     lines.append("\n_Research only — not financial advice._")
     return "\n".join(lines)
 

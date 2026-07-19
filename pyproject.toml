@@ -1,6 +1,6 @@
 [project]
 name = "mlb-model"
-version = "1.14.1"
+version = "1.15.0"
 description = "MLB prediction & betting model. Free-data, walk-forward backtested, honestly calibrated."
 readme = "README.md"
 requires-python = ">=3.13"

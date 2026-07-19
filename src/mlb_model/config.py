@@ -71,7 +71,10 @@ class Settings(BaseSettings):
     # high-K pitcher can make every opposing batter a "1+ K" pick, so the prop
     # cap matters. Raise these (or set very high) to see everything.
     alert_max_game_picks: int = 8
-    alert_max_prop_picks: int = 12
+    # The grouped prop format (one line per team-vs-pitcher) is ~4x denser
+    # than the old one-pick-per-line layout, so the cap affords more picks
+    # in less screen space.
+    alert_max_prop_picks: int = 24
 
     # --- Automation schedule (local time of the Mac) ---
     # The morning-sync LaunchAgent fires at this hour:minute. Set to ET if you
