@@ -164,9 +164,9 @@ def select_pitcher_strikeouts(matchups: list[dict]) -> list[dict[str, Any]]:
 # Message formatting
 # --------------------------------------------------------------------------- #
 _TIER_EMOJI = {"premium": "🟢", "strong": "🟡"}
-# Compact market tags for the grouped prop lines ("1+ Hit" reads fine on
-# its own line but wastes width inline).
-_MARKET_SHORT = {"1+ Hit": "H", "HR": "HR", "2+ TB": "TB"}
+# Compact market tags. Keep the threshold visible -- "TB 52%" without the
+# "2+" reads like a projected count instead of P(2+ total bases).
+_MARKET_SHORT = {"1+ Hit": "1+H", "HR": "HR", "2+ TB": "2+TB"}
 
 
 def _surname(name: str) -> str:
@@ -176,49 +176,23 @@ def _surname(name: str) -> str:
 
 
 def _prop_lines(prop_picks: list[dict], *, max_prop: int) -> list[str]:
-    """Dense prop section: one line per team-vs-pitcher group.
+    """Compact prop section: one pick per line.
 
-    ``CWS vs Bieber (R): 🟢 Vargas TB 51% · 🟡 Antonacci H 71%``
+    ``🟢 Vargas (CWS) 2+TB 52% vs Bieber``
 
-    Groups are ordered premium-first then by best edge; the pick budget
-    (``max_prop``) fills group by group with a trailing "+N more" line.
+    Emoji carries the tier; markets keep their threshold (1+H / 2+TB);
+    pitcher is surname-only. Input order (premium-first, best edge) is
+    preserved.
     """
-    groups: dict[tuple, list[dict]] = {}
-    for p in prop_picks:
-        key = (p.get("team") or "", p.get("opp_sp") or "", p.get("opp_throws") or "")
-        groups.setdefault(key, []).append(p)
-    ordered = sorted(
-        groups.values(),
-        key=lambda ps: (
-            all(x["tier"] != "premium" for x in ps),
-            -max(x["edge_pp"] for x in ps),
-        ),
-    )
-    # Cap picks per group too, or one hot matchup (a bad pitcher at Coors)
-    # eats the whole budget and only 2-3 games make the message. An
-    # uncapped render (`alert run --full`) shows every pick.
-    group_cap = min(6, max_prop) if max_prop < 10**8 else max_prop
     lines: list[str] = []
-    budget = max_prop
-    shown = 0
-    for ps in ordered:
-        if budget <= 0:
-            break
-        ranked = sorted(ps, key=lambda x: (x["tier"] != "premium", -x["edge_pp"]))
-        take = ranked[: min(group_cap, budget)]
-        budget -= len(take)
-        shown += len(take)
-        head = take[0]
-        sp = _surname(head.get("opp_sp") or "")
-        vs = f" vs {sp} ({head.get('opp_throws') or '?'})" if sp else ""
-        picks = " · ".join(
-            f"{_TIER_EMOJI.get(x['tier'], '•')} {_surname(x['player'])} "
-            f"{_MARKET_SHORT.get(x['market'], x['market'])} {x['model_prob'] * 100:.0f}%"
-            for x in take
+    for p in prop_picks[:max_prop]:
+        sp = _surname(p.get("opp_sp") or "")
+        vs = f" vs {sp}" if sp else ""
+        lines.append(
+            f"{_TIER_EMOJI.get(p['tier'], '•')} {_surname(p['player'])} ({p['team']}) "
+            f"{_MARKET_SHORT.get(p['market'], p['market'])} {p['model_prob'] * 100:.0f}%{vs}"
         )
-        extra = f" (+{len(ps) - len(take)})" if len(ps) > len(take) else ""
-        lines.append(f"{head['team']}{vs}: {picks}{extra}")
-    rest = len(prop_picks) - shown
+    rest = len(prop_picks) - min(len(prop_picks), max_prop)
     if rest > 0:
         lines.append(f"_…and {rest} more (see the app)_")
     return lines
