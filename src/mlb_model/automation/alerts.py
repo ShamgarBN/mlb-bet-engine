@@ -357,24 +357,55 @@ def _marker_path(target: date_cls, kind: str = "daily"):
     return settings.cache_dir / f"alert_{kind}_sent_{target.isoformat()}.flag"
 
 
-def _journaled_prop_keys(target: date_cls) -> set[tuple[str, str]]:
-    """(batter_name, prop_market) pairs already journaled for ``target``.
+def _alerted_props_log_path():
+    return settings.data_dir / "journal" / "alerted_props.parquet"
 
-    The morning run journals every matchup it scored, so this is exactly
-    the set of props the 11 AM alert could have seen. The afternoon pass
-    alerts only props NOT in this set — i.e. from lineups posted later.
+
+def _log_alerted_props(target: date_cls, prop_picks: list[dict]) -> None:
+    """Persist which (player, market) props an alert selected for ``target``.
+
+    This — not the props journal — is the afternoon pass's dedup source.
+    The scoring service journals EVERY matchup it scores (page loads, dry
+    runs, cache refreshes included), so journal presence can't distinguish
+    "alerted this morning" from "merely scored at some point".
     """
+    if not prop_picks:
+        return
     try:
-        from mlb_model.journal.props import _load
+        import pandas as pd
 
-        df = _load()
-        if df.empty:
+        rows = pd.DataFrame([
+            {
+                "game_date": target.isoformat(),
+                "player": p.get("player"),
+                "market": p.get("market"),
+                "tier": p.get("tier"),
+            }
+            for p in prop_picks
+        ])
+        path = _alerted_props_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            rows = pd.concat([pd.read_parquet(path), rows], ignore_index=True)
+        rows = rows.drop_duplicates(subset=["game_date", "player", "market"], keep="first")
+        rows.to_parquet(path, index=False)
+    except Exception:  # noqa: BLE001 -- logging picks must never block the alert
+        log.warning("alerts.alerted_props_log.failed")
+
+
+def _alerted_prop_keys(target: date_cls) -> set[tuple[str, str]]:
+    """(player, market) pairs already alerted for ``target``."""
+    try:
+        import pandas as pd
+
+        path = _alerted_props_log_path()
+        if not path.exists():
             return set()
-        day = df[df["game_date"].astype(str).str[:10] == target.isoformat()]
-        day = day[day["market"].isin(_PROP_MARKETS)]
-        return set(zip(day["batter_name"].astype(str), day["market"].astype(str)))
+        df = pd.read_parquet(path)
+        day = df[df["game_date"].astype(str) == target.isoformat()]
+        return set(zip(day["player"].astype(str), day["market"].astype(str)))
     except Exception:  # noqa: BLE001 -- dedup is best-effort; worst case we repeat picks
-        log.warning("alerts.afternoon.journal_read_failed")
+        log.warning("alerts.alerted_props_log.read_failed")
         return set()
 
 
@@ -410,36 +441,21 @@ def send_afternoon_props(
     if not dry_run and not force and marker.exists():
         return {"sent": False, "reason": "already-sent-today"}
 
-    # Snapshot what the MORNING run journaled, then score with fresh
-    # lineups WITHOUT recording -- recording here would make this run's
-    # own rows look "seen" to any later run (a dry run five minutes
-    # before the real send silently blanked it). Rows are journaled
-    # below, only once the outcome is settled.
-    seen = _journaled_prop_keys(target)
+    # New = not in the alerted-props log (what the morning alert actually
+    # sent). Scoring/journal state is NOT consulted: the scoring service
+    # journals every matchup it scores, so journal presence says nothing
+    # about what was alerted. Grading coverage comes from the scoring
+    # service's own recording during the refresh below.
+    seen = _alerted_prop_keys(target)
     matchups = todays_matchups(target, record=False, refresh=True)
     props = select_prop_picks(matchups)
-    label_to_market = {v: k for k, v in _PROP_LABEL.items()}
-    new = [
-        p for p in props
-        if (p["player"], label_to_market.get(p["market"], "")) not in seen
-    ]
+    new = [p for p in props if (p["player"], p["market"]) not in seen]
     result: dict[str, Any] = {"n_prop": len(props), "n_prop_new": len(new)}
 
     message = build_afternoon_message(target, new, uncapped=uncapped)
     result["message"] = message
-
-    def _journal() -> None:
-        try:
-            from mlb_model.journal.props import record_matchups
-
-            record_matchups(matchups)
-        except Exception:  # noqa: BLE001 -- journaling must never block the alert
-            log.warning("alerts.prop.record_failed")
-
     if message is None:
         result.update(sent=False, reason="no-new-props")
-        if not dry_run:
-            _journal()  # still journal candidates for grading
         return result
     if dry_run:
         result.update(sent=False, reason="dry-run")
@@ -448,7 +464,7 @@ def send_afternoon_props(
     sent = post_to_discord(message)
     result["sent"] = sent
     if sent:
-        _journal()
+        _log_alerted_props(target, new)
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("sent")
         log.info(
@@ -456,8 +472,8 @@ def send_afternoon_props(
             date=target.isoformat(), n_prop=len(props), n_prop_new=len(new),
         )
     else:
-        # Deliberately NOT journaled: a retry (--force) must still see
-        # these props as "new" or it would dedupe its own failed attempt.
+        # Deliberately not logged as alerted: a retry (--force) must still
+        # see these props as "new" or it would dedupe its own failed attempt.
         result["reason"] = "post-failed-or-no-webhook"
     return result
 
@@ -513,6 +529,7 @@ def send_daily_alert(
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text("sent")
         _log_pitcher_ks(target, pitcher_ks)
+        _log_alerted_props(target, prop_picks)
         log.info("alerts.sent", date=target.isoformat(), n_game=len(game_picks), n_prop=len(prop_picks))
     else:
         result["reason"] = "post-failed-or-no-webhook"

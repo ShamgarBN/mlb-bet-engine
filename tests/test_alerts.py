@@ -129,7 +129,7 @@ def test_build_message_renders_pitcher_k_section():
 def _wire_afternoon(monkeypatch, *, prop=_PROP, seen=None):
     monkeypatch.setattr(alerts, "todays_matchups", lambda t, **k: [{"game_pk": 1}])
     monkeypatch.setattr(alerts, "select_prop_picks", lambda m: prop)
-    monkeypatch.setattr(alerts, "_journaled_prop_keys", lambda t: seen or set())
+    monkeypatch.setattr(alerts, "_alerted_prop_keys", lambda t: seen or set())
 
 
 def test_afternoon_message_none_when_empty():
@@ -144,7 +144,7 @@ def test_afternoon_message_lists_props():
 
 def test_afternoon_sends_only_new_props(monkeypatch, tmp_path):
     # Judge's HR prop was already journaled by the morning run -> excluded.
-    _wire_afternoon(monkeypatch, seen={("Aaron Judge", "prop_hr")})
+    _wire_afternoon(monkeypatch, seen={("Aaron Judge", "HR")})
     monkeypatch.setattr(alerts.settings, "cache_dir", tmp_path)
     res = alerts.send_afternoon_props(date(2026, 7, 18), dry_run=True)
     assert res["n_prop"] == 1 and res["n_prop_new"] == 0
@@ -152,7 +152,7 @@ def test_afternoon_sends_only_new_props(monkeypatch, tmp_path):
 
 
 def test_afternoon_sends_unseen_props(monkeypatch, tmp_path):
-    _wire_afternoon(monkeypatch, seen={("Someone Else", "prop_hr")})
+    _wire_afternoon(monkeypatch, seen={("Someone Else", "HR")})
     monkeypatch.setattr(alerts.settings, "cache_dir", tmp_path)
     monkeypatch.setattr(alerts, "post_to_discord", lambda content, **k: True)
     res = alerts.send_afternoon_props(date(2026, 7, 18))
@@ -167,38 +167,43 @@ def test_afternoon_marker_separate_from_morning(tmp_path, monkeypatch):
     assert alerts._marker_path(d) != alerts._marker_path(d, kind="afternoon")
 
 
-def test_afternoon_dry_run_does_not_journal(monkeypatch, tmp_path):
+def test_afternoon_dry_run_does_not_log_alerted(monkeypatch, tmp_path):
     calls = []
     _wire_afternoon(monkeypatch)
     monkeypatch.setattr(alerts.settings, "cache_dir", tmp_path)
-    monkeypatch.setattr(
-        "mlb_model.journal.props.record_matchups", lambda m: calls.append(m)
-    )
+    monkeypatch.setattr(alerts, "_log_alerted_props", lambda t, ps: calls.append(ps))
     res = alerts.send_afternoon_props(date(2026, 7, 18), dry_run=True)
     assert res["n_prop_new"] == 1 and calls == []
     live = alerts.send_afternoon_props(date(2026, 7, 18), dry_run=True)
     assert live["n_prop_new"] == 1  # dry run didn't poison the dedup
 
 
-def test_afternoon_failed_post_does_not_journal(monkeypatch, tmp_path):
+def test_afternoon_failed_post_does_not_log_alerted(monkeypatch, tmp_path):
     calls = []
     _wire_afternoon(monkeypatch)
     monkeypatch.setattr(alerts.settings, "cache_dir", tmp_path)
-    monkeypatch.setattr(
-        "mlb_model.journal.props.record_matchups", lambda m: calls.append(m)
-    )
+    monkeypatch.setattr(alerts, "_log_alerted_props", lambda t, ps: calls.append(ps))
     monkeypatch.setattr(alerts, "post_to_discord", lambda content, **k: False)
     res = alerts.send_afternoon_props(date(2026, 7, 18))
     assert res["sent"] is False and calls == []
 
 
-def test_afternoon_successful_post_journals(monkeypatch, tmp_path):
+def test_afternoon_successful_post_logs_alerted(monkeypatch, tmp_path):
     calls = []
     _wire_afternoon(monkeypatch)
     monkeypatch.setattr(alerts.settings, "cache_dir", tmp_path)
-    monkeypatch.setattr(
-        "mlb_model.journal.props.record_matchups", lambda m: calls.append(m)
-    )
+    monkeypatch.setattr(alerts, "_log_alerted_props", lambda t, ps: calls.append(ps))
     monkeypatch.setattr(alerts, "post_to_discord", lambda content, **k: True)
     res = alerts.send_afternoon_props(date(2026, 7, 18))
     assert res["sent"] is True and len(calls) == 1
+
+
+def test_alerted_props_log_round_trip(monkeypatch, tmp_path):
+    monkeypatch.setattr(alerts.settings, "data_dir", tmp_path)
+    d = date(2026, 7, 19)
+    assert alerts._alerted_prop_keys(d) == set()
+    alerts._log_alerted_props(d, _PROP)
+    assert alerts._alerted_prop_keys(d) == {("Aaron Judge", "HR")}
+    alerts._log_alerted_props(d, _PROP)  # idempotent
+    import pandas as pd
+    assert len(pd.read_parquet(alerts._alerted_props_log_path())) == 1
