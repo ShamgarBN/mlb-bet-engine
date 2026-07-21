@@ -28,7 +28,7 @@ def test_build_message_includes_both_sections():
     assert "Game markets" in msg and "Hitter props" in msg
     assert "🟢" in msg and "🟡" in msg
     assert "NYY @ BOS" in msg
-    assert "🟢 Judge (NYY) HR 24% vs Crochet" in msg   # compact prop line
+    assert "🟢 Aaron Judge (NYY) HR 24% vs Crochet" in msg   # compact prop line
     assert "74%" in msg                                    # game confidence rendered
 
 
@@ -122,7 +122,7 @@ def test_prop_picks_exclude_strikeouts():
 def test_build_message_renders_pitcher_k_section():
     pk = [{"pitcher": "Logan Gilbert", "team": "SEA", "throws": "R", "vs_team": "CLE", "est_k": 6.6}]
     msg = alerts.build_message(date(2026, 6, 25), [], [], pk)
-    assert "Pitcher Ks (est)" in msg and "Gilbert (SEA) 6.6" in msg
+    assert "Pitcher Ks (est)" in msg and "• Logan Gilbert (SEA) 6.6" in msg
 
 
 # --- afternoon lineup-props alert ------------------------------------------ #
@@ -139,7 +139,7 @@ def test_afternoon_message_none_when_empty():
 def test_afternoon_message_lists_props():
     msg = alerts.build_afternoon_message(date(2026, 7, 18), _PROP)
     assert "afternoon lineup props" in msg
-    assert "🟢 Judge (NYY) HR 24% vs Crochet" in msg
+    assert "🟢 Aaron Judge (NYY) HR 24% vs Crochet" in msg
 
 
 def test_afternoon_sends_only_new_props(monkeypatch, tmp_path):

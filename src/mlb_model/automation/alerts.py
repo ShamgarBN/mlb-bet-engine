@@ -189,7 +189,7 @@ def _prop_lines(prop_picks: list[dict], *, max_prop: int) -> list[str]:
         sp = _surname(p.get("opp_sp") or "")
         vs = f" vs {sp}" if sp else ""
         lines.append(
-            f"{_TIER_EMOJI.get(p['tier'], '•')} {_surname(p['player'])} ({p['team']}) "
+            f"{_TIER_EMOJI.get(p['tier'], '•')} {p['player']} ({p['team']}) "
             f"{_MARKET_SHORT.get(p['market'], p['market'])} {p['model_prob'] * 100:.0f}%{vs}"
         )
     rest = len(prop_picks) - min(len(prop_picks), max_prop)
@@ -239,11 +239,9 @@ def build_message(
         lines.extend(_prop_lines(prop_picks, max_prop=max_prop))
 
     if pitcher_ks:
-        ks = pitcher_ks[: (big if uncapped else 12)]
-        inline = " · ".join(
-            f"{_surname(k['pitcher'])} ({k['team']}) {k['est_k']:g}" for k in ks
-        )
-        lines.append(f"\n__Pitcher Ks (est)__\n{inline}")
+        lines.append("\n__Pitcher Ks (est)__")
+        for k in pitcher_ks[: (big if uncapped else 12)]:
+            lines.append(f"• {k['pitcher']} ({k['team']}) {k['est_k']:g}")
 
     lines.append("\n_Research only — not financial advice._")
     return "\n".join(lines)
