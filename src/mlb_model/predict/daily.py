@@ -81,13 +81,20 @@ def predict_for_date(target_date: date_cls, *, refresh_data: bool = True) -> pd.
         # unset -- predictions then fall back to the league-average
         # baseline as before. One ``/odds`` call covers the whole slate
         # (3 credits on the free tier).
-        try:
-            from mlb_model.data.sources import odds_api as _odds_api
+        #
+        # Only fetch for today or a future slate: the live ``/odds``
+        # endpoint returns upcoming games only, so fetching it while
+        # predicting a past (already-final) date burns credits on rows
+        # that can never join -- historical predictions read their
+        # market line from the warehouse instead.
+        if target_date >= date_cls.today():
+            try:
+                from mlb_model.data.sources import odds_api as _odds_api
 
-            wrote = _odds_api.ingest_live_slate()
-            log.info("predict.odds_api.ingested", rows=wrote)
-        except Exception:  # noqa: BLE001
-            log.exception("predict.odds_api.failed")
+                wrote = _odds_api.ingest_live_slate()
+                log.info("predict.odds_api.ingested", rows=wrote)
+            except Exception:  # noqa: BLE001
+                log.exception("predict.odds_api.failed")
 
     # Build features. We pass the whole season as training so rolling
     # windows for SP / team form / etc. include all season-to-date games.

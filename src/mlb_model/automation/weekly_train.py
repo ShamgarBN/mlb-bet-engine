@@ -134,7 +134,14 @@ def _recent_moneyline_accuracy(days: int = 14) -> float | None:
     total = 0
     for d in df["game_date"]:
         try:
-            preds = predict_for_date(d if isinstance(d, date) else pd.to_datetime(d).date())
+            # These are already-finalized past dates scored from the
+            # warehouse -- no live refresh (schedule / weather / odds).
+            # Fetching live odds here would burn API credits on a slate
+            # that can never join to the historical game_pks.
+            preds = predict_for_date(
+                d if isinstance(d, date) else pd.to_datetime(d).date(),
+                refresh_data=False,
+            )
         except Exception:  # noqa: BLE001 -- skip days the model can't predict
             continue
         if preds.empty:
