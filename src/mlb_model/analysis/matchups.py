@@ -246,12 +246,17 @@ def batter_hands(player_ids: list[int]) -> dict[int, str]:
         return {}
 
 
-def grade_for_batter(batter_hand: str | None, tm: TeamMatchup | None) -> MatchupVerdict:
-    """Grade how favorable the matchup is for a HR bounce-back.
+def grade_for_batter(
+    batter_hand: str | None, tm: TeamMatchup | None, *, power: bool = True
+) -> MatchupVerdict:
+    """Grade how favorable the matchup is for the batter.
 
-    Combines the pitcher's season HR/9 with the OPS he allows to the batter's
-    effective hand (a switch hitter takes the platoon side vs the pitcher).
-    Positive edge = hittable / homer-prone = FAVORABLE.
+    Combines the OPS the pitcher allows to the batter's effective hand (a
+    switch hitter takes the platoon side vs the pitcher) with, when
+    ``power`` is set, his season HR/9 — biasing toward a HR bounce-back.
+    Pass ``power=False`` for a hit-drought bounce-back, where only the
+    pitcher's OPS-allowed (general hittability) matters, not his homer rate.
+    Positive edge = hittable = FAVORABLE.
     """
     if tm is None:
         return MatchupVerdict(label="NONE")
@@ -264,11 +269,13 @@ def grade_for_batter(batter_hand: str | None, tm: TeamMatchup | None) -> Matchup
     ops_vs = p.vs_l_ops if hand == "L" else p.vs_r_ops
     ops_used = ops_vs if ops_vs is not None else p.ops_allowed
 
-    hr9 = p.hr9
+    hr9 = p.hr9 if power else None
     parts = []
     edge = 0.0
     if ops_used is not None:
-        edge += (ops_used - LG_OPS_ALLOWED) / 0.120
+        # Without the HR/9 term, weight OPS more so a hittable pitcher still
+        # clears the ±0.8 FAVORABLE/TOUGH bands on OPS alone.
+        edge += (ops_used - LG_OPS_ALLOWED) / (0.120 if power else 0.090)
         parts.append(f"{ops_used:.3f} OPS vs {hand}HB")
     if hr9 is not None:
         edge += (hr9 - LG_HR9) / 0.90

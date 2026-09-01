@@ -1,0 +1,210 @@
+{% extends "base.html" %}
+{% block title %}Cold Bats{% endblock %}
+
+{% block content %}
+<section class="space-y-3 max-w-4xl mx-auto">
+  <!-- Header -->
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <div>
+      <h1 class="text-xl font-semibold text-white">
+        Cold .300 bats
+        <span class="text-chrome-500 font-normal">· {{ season }}</span>
+      </h1>
+      <p class="text-xs text-chrome-400 mt-0.5 max-w-2xl">
+        Qualified
+        <span class="text-chrome-200">.{{ '%03d' % ((snapshot.threshold if snapshot else 0.300) * 1000)|round|int }}+</span>
+        hitters (≥200 PA) with no hit in their last
+        {{ snapshot.min_drought if snapshot else 3 }}+ games played. Cause is labelled
+        <span class="text-rose-300">INJURY</span> / <span class="text-amber-300">EXTERNAL</span>
+        only when MLB logged the move; otherwise <span class="text-chrome-300">UNCLEAR</span>.
+      </p>
+    </div>
+    <div class="flex items-center gap-3 text-sm">
+      {% if snapshot %}
+      <span class="text-chrome-600 text-[11px] hidden sm:inline">as of {{ snapshot.as_of }}</span>
+      {% endif %}
+      <button type="button" onclick="refreshAll()"
+         title="Refreshes the entire tool — slate, odds, predictions, props, and the cold-bats report"
+         class="inline-flex items-center gap-1.5 rounded-md bg-brand-600/90 hover:bg-brand-500 text-white px-3 py-1.5 text-sm font-medium transition">
+        <svg viewBox="0 0 24 24" class="h-4 w-4" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
+        </svg>
+        <span>Refresh</span>
+      </button>
+    </div>
+  </div>
+
+  {% if error %}
+  <div class="rounded-lg border border-rose-700/50 bg-rose-950/40 px-4 py-3 text-sm text-rose-200">
+    Could not build the report: <span class="font-mono">{{ error }}</span>. Check <span class="font-mono">logs/</span>.
+  </div>
+  {% endif %}
+
+  {% if snapshot %}
+  <!-- Summary cards -->
+  <div class="grid gap-2 sm:grid-cols-3">
+    {% for key, sh in snapshot.shares.items() %}
+    <div class="rounded-lg border border-chrome-700/50 bg-chrome-800/40 px-3 py-2 ring-1 ring-brand-500/40">
+      <div class="text-[10px] uppercase tracking-wider text-chrome-500 truncate">.300 club · {{ sh.label }}</div>
+      <div class="mt-0.5 flex items-baseline gap-2">
+        <span class="text-2xl font-semibold text-brand-300">{{ snapshot.n_at_threshold }}</span>
+        <span class="text-xs text-chrome-500">of {{ sh.denom_count }} ({{ sh.pct }}%)</span>
+      </div>
+    </div>
+    {% endfor %}
+    <div class="rounded-lg border border-chrome-700/50 bg-chrome-800/40 px-3 py-2">
+      <div class="text-[10px] uppercase tracking-wider text-chrome-500 truncate">In a hit drought</div>
+      <div class="mt-0.5 flex items-baseline gap-2">
+        <span class="text-2xl font-semibold text-white">{{ snapshot.hitters | length }}</span>
+        <span class="text-xs text-chrome-500">flagged</span>
+      </div>
+    </div>
+    <div class="rounded-lg border border-chrome-700/50 bg-chrome-800/40 px-3 py-2">
+      <div class="text-[10px] uppercase tracking-wider text-chrome-500 truncate">Active today</div>
+      <div class="mt-0.5 flex items-baseline gap-2">
+        <span class="text-2xl font-semibold text-emerald-300">{{ snapshot.n_active_today }}</span>
+        <span class="text-xs text-chrome-500">· {{ snapshot.n_favorable }} favorable</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Compact, expandable hitter list — bettable cold streaks first -->
+  {% macro badge_classes(label) -%}
+    {{ {
+      'INJURY (verified)': 'bg-rose-950/60 text-rose-300 ring-rose-700/50',
+      'EXTERNAL (verified)': 'bg-amber-950/50 text-amber-300 ring-amber-700/50',
+    }.get(label, 'bg-chrome-800/70 text-chrome-400 ring-chrome-600/40') }}
+  {%- endmacro %}
+  {# Matchup carries the green/red "go / avoid" signal. #}
+  {% macro matchup_classes(label) -%}
+    {{ {
+      'FAVORABLE': 'bg-emerald-950/50 text-emerald-300 ring-emerald-700/50',
+      'TOUGH': 'bg-rose-950/50 text-rose-300/90 ring-rose-800/40',
+      'NEUTRAL': 'bg-chrome-800/60 text-chrome-400 ring-chrome-600/40',
+    }.get(label, 'text-chrome-600 ring-transparent') }}
+  {%- endmacro %}
+
+  <div class="rounded-lg border border-chrome-700/50 overflow-hidden">
+    <div class="flex items-center justify-between bg-chrome-800/70 px-3 py-1.5 text-[11px] uppercase tracking-wider text-chrome-400">
+      <span>Active today · hitless streak · AVG · matchup</span>
+      <span><span class="text-emerald-300">{{ snapshot.n_active_today }} active today</span> · {{ snapshot.n_favorable }} favorable matchup</span>
+    </div>
+
+    {% set ns = namespace(inactive_shown=false, il_header_shown=false) %}
+    {% if snapshot.n_active_today == 0 %}
+      <div class="px-3 py-2 text-[11px] text-chrome-500 border-t border-chrome-800">
+        No qualifying hitters have a pre-game game today — see upcoming spots below.
+      </div>
+    {% endif %}
+    {% for s in snapshot.hitters %}
+      {# Fence: bettable but not playing today (team off / already played / sitting). #}
+      {% if not s.active_today and s.status_label != 'INJURY (verified)' and not ns.inactive_shown %}
+        {% set ns.inactive_shown = true %}
+        <div class="flex items-center gap-2 bg-chrome-900/40 px-3 py-1 text-[11px] uppercase tracking-wider text-chrome-500 border-t border-chrome-700/50">
+          <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+          Not playing today — off day, game already started, or sitting
+        </div>
+      {% endif %}
+      {# Fence off the verified-injury group at the bottom — not bettable. #}
+      {% if s.status_label == 'INJURY (verified)' and not ns.il_header_shown %}
+        {% set ns.il_header_shown = true %}
+        <div class="flex items-center gap-2 bg-chrome-900/60 px-3 py-1 text-[11px] uppercase tracking-wider text-chrome-500 border-t border-chrome-700/50">
+          <svg viewBox="0 0 24 24" class="h-3.5 w-3.5" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4m0 4h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+          On the IL — not bettable ({{ snapshot.n_injury }})
+        </div>
+      {% endif %}
+
+      {% set injured = s.status_label == 'INJURY (verified)' %}
+      <details class="group border-t border-chrome-800 {{ 'opacity-60 hover:opacity-100 transition-opacity' if not s.active_today else '' }}">
+        <summary class="flex items-center gap-3 px-3 py-1.5 cursor-pointer hover:bg-chrome-800/30 list-none [&::-webkit-details-marker]:hidden">
+          <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 shrink-0 text-chrome-600 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+          <div class="min-w-0 flex-1 truncate">
+            <span class="font-medium text-chrome-100">{{ s.name }}</span>
+            <span class="text-chrome-500 text-xs"> · {{ s.team }}</span>
+          </div>
+          <!-- cold streak: games since last hit (single line) -->
+          <div class="shrink-0 text-right w-44 text-xs whitespace-nowrap">
+            {% if s.is_absent and s.drought_games == 0 %}
+              <span class="font-mono text-chrome-500">—</span>
+            {% else %}
+              <span class="font-mono {{ 'text-rose-300' if s.drought_games >= 5 else 'text-chrome-200' }}">{{ s.drought_games }}G hitless</span>
+              <span class="text-chrome-600">· last {{ s.last_hit_date or '—' }}</span>
+            {% endif %}
+          </div>
+          <!-- season batting average -->
+          <div class="shrink-0 text-right w-16 font-mono text-chrome-100">
+            .{{ '%03d' % (s.batting_average * 1000)|round|int }}<span class="text-[10px] text-chrome-500"> AVG</span>
+          </div>
+          <!-- pitching matchup (the betting signal) or injury status -->
+          {% if injured or s.status_label == 'EXTERNAL (verified)' %}
+          <span class="shrink-0 w-36 text-center inline-flex items-center justify-center rounded px-1.5 py-0.5 text-[11px] font-medium ring-1 {{ badge_classes(s.status_label) }}">
+            {{ s.status_label }}
+          </span>
+          {% else %}
+          <span class="shrink-0 w-36 text-center inline-flex items-center justify-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium ring-1 {{ matchup_classes(s.matchup_label) }}"
+                title="{{ s.matchup_detail }}">
+            {% if s.matchup_label == 'NONE' %}no matchup yet{% else %}{{ s.matchup_label|lower|capitalize }}{% if s.matchup_throws %} · {{ s.matchup_throws }}HP{% endif %}{% endif %}
+          </span>
+          {% endif %}
+        </summary>
+
+        <!-- expanded detail -->
+        <div class="px-9 pb-3 pt-1 bg-chrome-900/40 text-sm space-y-2">
+          <div class="text-chrome-300 text-xs">{{ s.advisory }}</div>
+          {% if not injured and s.status_label != 'EXTERNAL (verified)' %}
+          <div class="text-xs">
+            <span class="uppercase tracking-wider text-chrome-500">Next matchup</span>
+            {% if s.matchup_label == 'NONE' %}
+              <span class="text-chrome-500"> — no probable pitcher posted yet</span>
+            {% else %}
+              <span class="font-medium {{ 'text-emerald-300' if s.matchup_label == 'FAVORABLE' else 'text-rose-300/90' if s.matchup_label == 'TOUGH' else 'text-chrome-300' }}"> {{ s.matchup_label|lower|capitalize }}</span>
+              <span class="text-chrome-400">{% if s.matchup_date %} ({{ s.matchup_date }}){% endif %} — {{ s.matchup_detail }}</span>
+            {% endif %}
+          </div>
+          {% endif %}
+          <dl class="grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-1 text-xs">
+            <div><dt class="text-chrome-500">Season AVG</dt><dd class="font-mono text-chrome-200">.{{ '%03d' % (s.batting_average * 1000)|round|int }}</dd></div>
+            <div><dt class="text-chrome-500">Hits / AB</dt><dd class="font-mono text-chrome-200">{{ s.hits }} / {{ s.at_bats }}</dd></div>
+            <div><dt class="text-chrome-500">Games since hit</dt><dd class="font-mono text-chrome-200">{% if s.is_absent and s.drought_games == 0 %}—{% else %}{{ s.drought_games }}{% endif %}</dd></div>
+            <div><dt class="text-chrome-500">Last hit</dt><dd class="font-mono text-chrome-200">{{ s.last_hit_date or '—' }}</dd></div>
+          </dl>
+          {% if s.news %}
+          <div>
+            <div class="text-[11px] uppercase tracking-wider text-chrome-500 mb-1">Recent news</div>
+            <ul class="space-y-1">
+              {% for h in s.news %}
+              <li class="text-xs text-chrome-400">
+                <span class="text-chrome-600 font-mono">{{ h.published or '' }}</span>
+                <a href="{{ h.url }}" target="_blank" rel="noopener noreferrer"
+                   class="hover:text-chrome-200 underline decoration-chrome-700">{{ h.title }}</a>
+                {% if h.source %}<span class="text-chrome-600">— {{ h.source }}</span>{% endif %}
+              </li>
+              {% endfor %}
+            </ul>
+          </div>
+          {% else %}
+          <div class="text-xs text-chrome-600">No recent news found.</div>
+          {% endif %}
+        </div>
+      </details>
+    {% else %}
+      <div class="px-4 py-8 text-center text-chrome-500">
+        No qualified .300+ hitters are in a {{ snapshot.min_drought }}+ game hit drought right now.
+      </div>
+    {% endfor %}
+  </div>
+
+  <p class="text-xs text-chrome-500">
+    Primary list = .300 bats playing a pre-game game today, sorted by
+    <span class="text-emerald-300/80">favorable</span> matchup (opposing probable pitcher
+    soft — high OPS-allowed — vs the hitter's hand). Off-today and IL bats are separated
+    below. Injury status reads the MLB transactions feed; news is context only.
+    Not financial advice.
+  </p>
+  {% elif not error %}
+  <div class="rounded-xl border border-chrome-700/50 bg-chrome-800/40 p-8 text-center text-chrome-400">
+    Building the report for the first time… hit <a href="/hitters?season={{ season }}&refresh=1" class="text-brand-300 underline">Refresh</a>.
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

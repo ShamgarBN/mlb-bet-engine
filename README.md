@@ -349,8 +349,9 @@ Two background jobs keep the app honest:
   honest: it shows the last *fully successful* run, not just "we attempted
   something", and turns amber/red when the data is stale or only partially
   synced. On macOS, if today's slate contains a premium-tier pick the sync
-  emits a single Notification Center alert (deduped per day). It also posts a
-  **Discord alert** (see below) with the day's Premium/Strong picks.
+  emits a single Notification Center alert (deduped per day). It is **data-only**
+  and runs at **10:45 local**, ahead of the staggered Discord alert streams
+  (see below), which read the fresh data it leaves behind.
 - **Weekly retrain** (`mlb-model weekly-train`): on Sundays, archives the
   current model files, refits on a fresh 6-year window, and validates
   the new model against the last 14 days. If the moneyline accuracy
@@ -362,34 +363,52 @@ need cron. To make them run unconditionally at a fixed time, install the
 macOS LaunchAgents:
 
 ```bash
-uv run mlb-model install-schedule      # morning-sync + 03:00 Sunday retrain
+uv run mlb-model install-schedule      # 10:45 data sync, 8 alert streams, 03:00 Sun retrain
 uv run mlb-model install-schedule --uninstall
 ```
 
-The morning-sync time defaults to **11:00 local** — set `MLB_MORNING_SYNC_HOUR`
-/ `MLB_MORNING_SYNC_MINUTE` in `.env` (use ET if you want "11 AM ET";
-LaunchAgents fire in the Mac's local timezone). The app footer shows the last
-successful run of each job.
+`install-schedule` installs the 10:45 morning sync, the Sunday retrain, the 8:00
+recap, and one LaunchAgent per staggered alert stream (below). Re-run it after
+updating to pick up the new agents — it also retires the old single-shot
+afternoon-props agent automatically. The app footer shows the last successful
+run of each job. LaunchAgents fire in the Mac's local timezone.
 
 ### Discord alerts for high-confidence picks
 
-Get a daily Discord message with the day's **Premium/Strong** picks — game
-markets (ML/RL/O-U, confidence ≥ 0.50) and hitter props (edge ≥ 5 pp over the
-league baseline). Setup:
+The day's picks are delivered as **staggered, single-purpose messages** so each
+is a tight, scannable list rather than one wall of text. Early games (starting
+before `MLB_EARLY_LATE_CUTOFF_HOUR`, default **5 PM local**) are covered in the
+late morning; the rest in the afternoon once evening lineups post:
+
+| Time  | Message        | Contents                                             |
+|-------|----------------|------------------------------------------------------|
+| 8:00  | Recap          | Yesterday's alerted picks, graded by tier            |
+| 11:00 | Early pitchers | High-K starters (est. K's), early games              |
+| 11:07 | Early hitters  | Premium/Strong hit / HR / TB props, early games      |
+| 11:15 | Cold hitters   | Active .300 bats in a hit drought · 🟢/🟡/🔴 by matchup |
+| 11:30 | Cold sluggers  | Active HR bats in a homer drought · same colours     |
+| 11:45 | Game markets   | ML / RL / O-U, whole slate                           |
+| 16:30 | Late hitters   | Remaining props (evening games), deduped vs morning  |
+| 16:37 | Late pitchers  | Remaining high-K starters, deduped                   |
+| 16:45 | Game markets   | Late games only, **sent only if the pick changed**   |
+
+The 🟢 favorable / 🟡 neutral / 🔴 tough colour is the opposing probable
+pitcher's grade vs that hitter's hand (see the Sluggers / Cold Bats pages).
+Setup:
 
 1. In Discord: **Edit Channel → Integrations → Webhooks → New Webhook → Copy
    Webhook URL**.
 2. Add it to `.env`: `MLB_DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...`
 3. Verify: `uv run mlb-model alert test` (posts a test message).
-4. It now fires automatically inside `morning-sync` (so `install-schedule`
-   delivers it daily). Preview any day with
-   `uv run mlb-model alert run --dry-run`.
+4. `install-schedule` delivers the streams above daily. Preview any stream with
+   `uv run mlb-model alert-stream <name> --dry-run` (`--list` shows the names).
 
-Without a webhook the alert step no-ops. Alerts are deduped once per day and
-capped (Premium-first) at `MLB_ALERT_MAX_GAME_PICKS` / `MLB_ALERT_MAX_PROP_PICKS`
-(defaults 8 / 12) so the message stays a tight "top plays" list. Strikeouts are
-summarized **per starting pitcher** ("estimated K's") rather than as one prop
-per batter, so a high-K starter doesn't flood the message.
+Without a webhook the streams no-op. Each stream is deduped independently once
+per day; a hitter or pitcher alerted in the morning never repeats in the
+afternoon. Props are capped (Premium-first) at `MLB_ALERT_MAX_PROP_PICKS`; game
+markets at `MLB_ALERT_MAX_GAME_PICKS`. Strikeouts are summarized **per starting
+pitcher** ("estimated K's") rather than one prop per batter. The legacy combined
+`mlb-model alert run` still builds the old all-in-one message on demand.
 
 #### Running alerts on an always-on host
 

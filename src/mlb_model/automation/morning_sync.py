@@ -267,15 +267,11 @@ def run_morning_sync(today: date | None = None) -> dict[str, Any]:
         log.exception("morning_sync.slugger.failed")
         counts["slugger_snapshot"] = {"error": True}
 
-    # 6) Discord alert for today's Premium/Strong game + prop picks.
-    #    Best-effort, deduped per day; no-ops without a configured webhook.
-    try:
-        from mlb_model.automation import alerts
-
-        counts["discord_alert"] = alerts.send_daily_alert(today)
-    except Exception:  # noqa: BLE001
-        log.exception("morning_sync.discord_alert.failed")
-        counts["discord_alert"] = {"error": True}
+    # 6) Discord alerts are no longer sent from here. morning-sync is now
+    #    DATA-ONLY: it refreshes the slate/odds/weather and clears the
+    #    prediction cache so the staggered alert streams (11:00-11:45 and the
+    #    4:30-4:45 late window, in mlb_model.automation.alert_streams) read
+    #    fresh data. See mlb_model.automation.scheduler for the LaunchAgents.
 
     # macOS desktop notification when today's slate contains a
     # premium-tier pick. Best-effort -- fails silently on Linux, in

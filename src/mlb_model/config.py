@@ -77,17 +77,36 @@ class Settings(BaseSettings):
     alert_max_prop_picks: int = 24
 
     # --- Automation schedule (local time of the Mac) ---
-    # The morning-sync LaunchAgent fires at this hour:minute. Set to ET if you
-    # want "11 AM ET" -- launchd uses the Mac's local timezone.
-    morning_sync_hour: int = 11
-    morning_sync_minute: int = 0
-    # The afternoon-props LaunchAgent re-scores matchups once most lineups
-    # have posted (night games publish theirs mid-afternoon) and alerts any
-    # NEW Premium/Strong hitter props the 11 AM run couldn't see.
+    # Games starting before this local hour are "early-day" (covered by the
+    # 11 AM window); the rest are "late-day" (covered by the 4:30 PM window).
+    early_late_cutoff_hour: int = 17  # 5 PM local
+
+    # morning-sync is now DATA-ONLY (schedule / odds / weather / cache) and runs
+    # before the alert streams so they read fresh predictions. Its old combined
+    # 11 AM Discord alert has been split into the staggered streams below.
+    morning_sync_hour: int = 10
+    morning_sync_minute: int = 45
+
+    # Staggered Discord alert streams. Each is its own LaunchAgent + CLI call,
+    # deduped independently. (hour, minute) in the Mac's local timezone.
+    # Early window (games starting before early_late_cutoff_hour):
+    alert_early_pitchers_hm: tuple[int, int] = (11, 0)   # high-K starters
+    alert_early_hitters_hm: tuple[int, int] = (11, 7)    # hit/HR/TB props
+    alert_cold_hitters_hm: tuple[int, int] = (11, 15)    # cold .300 bats
+    alert_cold_sluggers_hm: tuple[int, int] = (11, 30)   # cold HR bats
+    alert_game_markets_hm: tuple[int, int] = (11, 45)    # ML/RL/O-U, whole slate
+    # Late window (games starting at/after the cutoff):
+    alert_late_hitters_hm: tuple[int, int] = (16, 30)    # remaining hitters
+    alert_late_pitchers_hm: tuple[int, int] = (16, 37)   # remaining starters
+    alert_late_games_hm: tuple[int, int] = (16, 45)      # late ML/RL/O-U if changed
+
+    # Retained for back-compat with the old single-shot afternoon job and any
+    # manual `afternoon-props` call; the scheduled late window now uses the
+    # streams above.
     afternoon_props_hour: int = 16
     afternoon_props_minute: int = 30
     # The daily-recap LaunchAgent posts yesterday's scorecard (win rates by
-    # tier for alerted picks) each morning before the 11 AM picks alert.
+    # tier for alerted picks) each morning before the picks alerts.
     daily_recap_hour: int = 8
     daily_recap_minute: int = 0
 

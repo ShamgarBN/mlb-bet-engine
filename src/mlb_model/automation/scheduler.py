@@ -32,8 +32,25 @@ LAUNCH_AGENTS_DIR: Final[Path] = Path.home() / "Library" / "LaunchAgents"
 
 MORNING_LABEL: Final[str] = "com.local.mlbforecast.morning-sync"
 WEEKLY_LABEL: Final[str] = "com.local.mlbforecast.weekly-train"
-AFTERNOON_LABEL: Final[str] = "com.local.mlbforecast.afternoon-props"
 RECAP_LABEL: Final[str] = "com.local.mlbforecast.daily-recap"
+
+# One LaunchAgent per staggered alert stream. Each fires `alert-stream <name>`
+# at its configured (hour, minute); the settings key holds the time.
+STREAM_LABEL_PREFIX: Final[str] = "com.local.mlbforecast.alert-"
+STREAM_SCHEDULE: Final[tuple[tuple[str, str], ...]] = (
+    ("early-pitchers", "alert_early_pitchers_hm"),
+    ("early-hitters", "alert_early_hitters_hm"),
+    ("cold-hitters", "alert_cold_hitters_hm"),
+    ("cold-sluggers", "alert_cold_sluggers_hm"),
+    ("early-games", "alert_game_markets_hm"),
+    ("late-hitters", "alert_late_hitters_hm"),
+    ("late-pitchers", "alert_late_pitchers_hm"),
+    ("late-games", "alert_late_games_hm"),
+)
+
+# Old single-shot afternoon agent, retired in favour of the late-window
+# streams; uninstall() removes any lingering copy on the next install.
+_LEGACY_AFTERNOON_LABEL: Final[str] = "com.local.mlbforecast.afternoon-props"
 
 
 def _resolve_uv() -> str:
@@ -121,14 +138,6 @@ def install() -> dict[str, Path]:
         # Weekday: 0 or 7 = Sunday in launchd.
         calendar_interval={"Weekday": 0, "Hour": 3, "Minute": 0},
     )
-    afternoon_plist = _build_plist(
-        AFTERNOON_LABEL,
-        args=[uv, "run", "mlb-model", "afternoon-props"],
-        calendar_interval={
-            "Hour": int(settings.afternoon_props_hour),
-            "Minute": int(settings.afternoon_props_minute),
-        },
-    )
     recap_plist = _build_plist(
         RECAP_LABEL,
         args=[uv, "run", "mlb-model", "daily-recap"],
@@ -138,13 +147,33 @@ def install() -> dict[str, Path]:
         },
     )
 
-    paths: dict[str, Path] = {}
-    for label, payload in [
+    payloads: list[tuple[str, dict[str, object]]] = [
         (MORNING_LABEL, morning_plist),
         (WEEKLY_LABEL, weekly_plist),
-        (AFTERNOON_LABEL, afternoon_plist),
         (RECAP_LABEL, recap_plist),
-    ]:
+    ]
+
+    # One agent per staggered alert stream, at its configured (hour, minute).
+    for stream_name, setting_key in STREAM_SCHEDULE:
+        hour, minute = getattr(settings, setting_key)
+        payloads.append((
+            f"{STREAM_LABEL_PREFIX}{stream_name}",
+            _build_plist(
+                f"{STREAM_LABEL_PREFIX}{stream_name}",
+                args=[uv, "run", "mlb-model", "alert-stream", stream_name],
+                calendar_interval={"Hour": int(hour), "Minute": int(minute)},
+            ),
+        ))
+
+    # Retire the old single-shot afternoon agent if a prior install left one.
+    _legacy = LAUNCH_AGENTS_DIR / f"{_LEGACY_AFTERNOON_LABEL}.plist"
+    if _legacy.exists():
+        _launchctl("unload", str(_legacy))
+        _legacy.unlink()
+        log.info("scheduler.retired_legacy", label=_LEGACY_AFTERNOON_LABEL)
+
+    paths: dict[str, Path] = {}
+    for label, payload in payloads:
         path = _write_plist(label, payload)
         # Unload any prior version then load the fresh one.
         _launchctl("unload", str(path))
@@ -156,7 +185,9 @@ def install() -> dict[str, Path]:
 
 def uninstall() -> None:
     """Unload and delete all LaunchAgents."""
-    for label in (MORNING_LABEL, WEEKLY_LABEL, AFTERNOON_LABEL, RECAP_LABEL):
+    stream_labels = [f"{STREAM_LABEL_PREFIX}{name}" for name, _ in STREAM_SCHEDULE]
+    for label in (MORNING_LABEL, WEEKLY_LABEL, RECAP_LABEL,
+                  _LEGACY_AFTERNOON_LABEL, *stream_labels):
         path = LAUNCH_AGENTS_DIR / f"{label}.plist"
         if path.exists():
             _launchctl("unload", str(path))

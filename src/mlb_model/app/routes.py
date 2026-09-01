@@ -382,6 +382,41 @@ def slugger_view(
     )
 
 
+@router.get("/hitters", response_class=HTMLResponse)
+def hitters_view(
+    request: Request,
+    season: int | None = Query(default=None),
+    refresh: int = Query(default=0),
+) -> HTMLResponse:
+    """Qualified .300+ hitters in a 3+ game hit drought, with IL-verified cause.
+
+    The contact-hitter sibling of /slugger: same heavy live report (season
+    totals + per-player game logs and team transactions), served from a dated
+    cache with a Refresh button. Cause is only labelled INJURY / EXTERNAL when
+    MLB logged the move — otherwise it stays honestly UNCLEAR.
+    """
+    from mlb_model.app import hitter_service
+
+    season = season or date_cls.today().year
+    error: str | None = None
+    snapshot: dict[str, Any] | None = None
+    try:
+        snapshot = hitter_service.get_report(season, refresh=bool(refresh))
+    except Exception as exc:  # noqa: BLE001 -- surface failures inline
+        log.exception("ui.hitters.failed", season=season)
+        error = f"{type(exc).__name__}: {exc}"
+
+    return _render(
+        request,
+        "hitter.html",
+        {
+            "season": season,
+            "snapshot": snapshot,
+            "error": error,
+        },
+    )
+
+
 @router.get("/log", response_class=HTMLResponse)
 def picks_log_view(request: Request) -> HTMLResponse:
     df = services.load_picks_log()

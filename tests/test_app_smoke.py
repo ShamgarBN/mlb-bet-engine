@@ -194,10 +194,11 @@ def test_scheduler_plist_payload(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(scheduler, "_launchctl", lambda *args, **kwargs: None)
 
     paths = scheduler.install()
-    assert set(paths) == {
-        scheduler.MORNING_LABEL, scheduler.WEEKLY_LABEL, scheduler.AFTERNOON_LABEL,
-        scheduler.RECAP_LABEL,
+    expected = {
+        scheduler.MORNING_LABEL, scheduler.WEEKLY_LABEL, scheduler.RECAP_LABEL,
+        *(f"{scheduler.STREAM_LABEL_PREFIX}{name}" for name, _ in scheduler.STREAM_SCHEDULE),
     }
+    assert set(paths) == expected
 
     for label, path in paths.items():
         assert path.exists()

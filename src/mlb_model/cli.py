@@ -31,6 +31,11 @@ slugger_app = typer.Typer(
     help="Track big HR hitters who have gone cold (slumping-slugger analysis)",
 )
 app.add_typer(slugger_app, name="slugger")
+hitter_app = typer.Typer(
+    no_args_is_help=True,
+    help="Track .300+ hitters in a multi-game hit drought (cold-bats analysis)",
+)
+app.add_typer(hitter_app, name="hitters")
 alert_app = typer.Typer(
     no_args_is_help=True,
     help="Discord alerts for high-confidence (Premium/Strong) picks",
@@ -626,6 +631,39 @@ def afternoon_props_cmd(
     )
 
 
+@app.command("alert-stream")
+def alert_stream_cmd(
+    name: Annotated[str, typer.Argument(help="Stream to run (see --list)")] = "",
+    force: Annotated[bool, typer.Option(help="Send even if already sent today")] = False,
+    dry_run: Annotated[bool, typer.Option(help="Build the message but don't post it")] = False,
+    list_streams: Annotated[bool, typer.Option("--list", help="List stream names and exit")] = False,
+) -> None:
+    """Run one staggered Discord alert stream (a LaunchAgent fires each on time).
+
+    Streams: early-pitchers (11:00), early-hitters (11:07), cold-hitters
+    (11:15), cold-sluggers (11:30), early-games (11:45), late-hitters (16:30),
+    late-pitchers (16:37), late-games (16:45). Each is deduped independently
+    for the day; --force overrides, --dry-run prints without posting.
+    """
+    configure_logging()
+    from mlb_model.automation import alert_streams
+
+    if list_streams or not name:
+        console.print("Streams: " + ", ".join(alert_streams.STREAM_NAMES))
+        return
+    try:
+        result = alert_streams.run_stream(name, force=force, dry_run=dry_run)
+    except KeyError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    if result.get("message"):
+        console.print(result["message"])
+    console.print(
+        f"stream: {name} · sent: {result.get('sent', False)}"
+        + (f" · {result['reason']}" if result.get("reason") else "")
+    )
+
+
 @app.command("daily-recap")
 def daily_recap_cmd(
     force: Annotated[bool, typer.Option(help="Send even if already sent today")] = False,
@@ -1091,6 +1129,104 @@ def slugger_slumps(
         path = Path(csv_out)
         path.parent.mkdir(parents=True, exist_ok=True)
         rows = [ss.status_to_row(s) for s in flagged]
+        with path.open("w", newline="") as fh:
+            w = _csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+            w.writeheader()
+            w.writerows(rows)
+        console.print(f"\n[green]Report written →[/green] {path}")
+
+
+@hitter_app.command("slumps")
+def hitter_slumps(
+    season: Annotated[int, typer.Option(help="Season year")] = date_cls.today().year,
+    threshold: Annotated[
+        float, typer.Option(help="Batting-average floor for an elite contact bat")
+    ] = 0.300,
+    min_drought: Annotated[
+        int, typer.Option(help="Flag players with this many+ hitless games")
+    ] = 3,
+    no_news: Annotated[bool, typer.Option(help="Skip the live news lookup")] = False,
+    no_matchups: Annotated[
+        bool, typer.Option(help="Skip the next-game pitching-matchup lookup")
+    ] = False,
+    csv_out: Annotated[
+        str | None, typer.Option(help="Optional path to write the report as CSV")
+    ] = None,
+) -> None:
+    """Find qualified .300+ hitters in a hit drought and explain why.
+
+    Flags cold streaks + absences, verifies the cause against the MLB
+    transactions feed (INJURY / EXTERNAL only when MLB logged the move; else
+    UNCLEAR), and for bettable players grades the next opposing pitcher (for a
+    *hit* bounce-back) and whether they play today. News is context only.
+    """
+    configure_logging()
+    from mlb_model.analysis import hitter_slump as hs
+
+    with console.status("Pulling season totals, game logs, matchups, and news…"):
+        hitters = hs.fetch_season_hitting(season)
+        flagged = hs.find_slumping_hitters(
+            season, threshold=threshold, min_drought=min_drought,
+            with_news=not no_news, with_matchups=not no_matchups, hitters=hitters,
+        )
+    console.print(f"[dim]AVG bar: [bold].{threshold * 1000:.0f}+[/bold] (≥200 PA qualified)[/dim]")
+
+    if not flagged:
+        console.print(
+            f"[green]No .{threshold * 1000:.0f}+ hitters are in a {min_drought}+ game hit drought today.[/green]"
+        )
+        raise typer.Exit()
+
+    _color = {
+        "INJURY (verified)": "red",
+        "EXTERNAL (verified)": "yellow",
+        "UNCLEAR": "chrome",
+    }
+    _mcolor = {"FAVORABLE": "green", "TOUGH": "red", "NEUTRAL": "chrome"}
+    table = Table(
+        title=f"{season}: .{threshold * 1000:.0f}+ hitters gone cold ({len(flagged)} flagged)"
+    )
+    table.add_column("player")
+    table.add_column("AVG", justify="right")
+    table.add_column("drought", justify="right")
+    table.add_column("last hit")
+    table.add_column("status")
+    table.add_column("next matchup", max_width=40)
+    for s in flagged:
+        drought_txt = "—" if s.is_absent and s.drought_games == 0 else f"{s.drought_games}G"
+        label = s.status_label
+        styled = f"[{_color.get(label, 'white')}]{label}[/]" if label != "UNCLEAR" else label
+        if label == "UNCLEAR" and s.matchup_label != "NONE":
+            mtag = f"[{_mcolor.get(s.matchup_label, 'white')}]{s.matchup_label.title()}[/]"
+            matchup = f"{mtag} vs {s.matchup_pitcher}" if s.matchup_pitcher else mtag
+        elif label == "UNCLEAR":
+            matchup = "[chrome]no probable yet[/]"
+        else:
+            matchup = s.advisory.split(" — ", 1)[-1] if " — " in s.advisory else "—"
+        table.add_row(
+            f"{s.name} ({s.team})" if s.team else s.name,
+            f".{s.batting_average * 1000:.0f}",
+            drought_txt,
+            s.last_hit_date.isoformat() if s.last_hit_date else "—",
+            styled,
+            matchup,
+        )
+    console.print(table)
+
+    if not no_news:
+        for s in flagged:
+            if s.news_headlines:
+                console.print(f"\n[bold]{s.name}[/bold] — recent news:")
+                for h in s.news_headlines:
+                    when = h.published.date().isoformat() if h.published else "?"
+                    console.print(f"  • [{when}] {h.title}")
+
+    if csv_out:
+        import csv as _csv
+
+        path = Path(csv_out)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rows = [hs.status_to_row(s) for s in flagged]
         with path.open("w", newline="") as fh:
             w = _csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
             w.writeheader()
